@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [vibe/sophie-emulator-wp1-wp3-010867]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (C11, make)
+        run: make
+
+      - name: Test suite (arm26 42 + mmio 7 + machine 13 assertions)
+        run: make test
+
+      - name: Benchmark (C core vs JS reference)
+        run: make bench
