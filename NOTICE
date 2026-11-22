@@ -1,0 +1,31 @@
+SOPHIE
+Copyright 2026 The SOPHIE Project
+
+This product includes original software developed for the SOPHIE project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The emulator tier (emu/) is implemented clean from primary specifications
+only — the ARM Architecture Reference Manual, Acorn MEMC/VIDC/IOC
+documentation, and RISC OS behaviour from the Apache-2.0-licensed ROOL
+sources and the RISC OS 5 PRMs. The following works were studied as
+behaviour reference and are credited here; no code or pseudocode-level
+material is derived from them (spec section 5 derivation boundary):
+
+  * RPCEmu (GPL v2) by Sarah Walker and Peter Howkins
+    https://www.marutan.net/rpcemu/index.php — reference and credit only.
+  * RPCEmu Extended (GPL v2 fork) by Andrew Timmins
+    https://github.com/andrewtimmins/rpcemu-extended — reference and credit
+    only; its licence-boundary precedent (ROOL's Apache-2.0/BSD USB modules
+    carried as guest-ROM data, never linked) is followed for ROM images and
+    Wi-Fi firmware blobs.
+  * Arculator (freeware, closed source) — Archimedes-era behaviour
+    reference only; its code is never read or copied.
+  * ROOL RISC OS 5 sources (Apache-2.0) and RISC OS 5 PRMs — behavioural
+    reference for RISC OS semantics.
+  * MAME (mamedev) Acorn device drivers (acorn_memc/acorn_vidc/acorn_ioc)
+    — used only for hardware register-layout facts (addresses, bit
+    fields), which are not copyrightable expression.
+
+RISC OS ROM images and Broadcom/Cypress Wi-Fi firmware blobs are runtime
+loaded data acquired separately under their own terms; they are not part
+of this distribution and are not licensed under the Apache License.

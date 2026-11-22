@@ -1,0 +1,90 @@
+/*
+ * ioc.h - IOC input/output controller model (WP3, Archimedes base machine).
+ *
+ * Register region: 0x03200000-0x033FFFFF. The internal register file is
+ * byte-wide and mirrored through the region (register = (addr-0x03200000)
+ * & 0x7F); offsets >= 0x10000 are the 1MHz peripheral bus (stub: reads 0xFF).
+ * IOC registers sit on data-bus lanes D16-D23: a word store latches
+ * (v>>16)&0xFF, a byte store (replicated on all lanes) latches the byte.
+ * Word reads are composed little-endian from byte reads (simplification,
+ * see reference manual).
+ *
+ * Register byte offsets:
+ *   0x00 CONTROL (GPIO C0-C5, IR/IF lines)
+ *   0x04 KART keyboard data (read clears Rx-full)
+ *   0x10 IRQ_STATUS_A   0x14 IRQ_REQUEST_A (write-1-clear, bits 0x7C)
+ *   0x18 IRQ_MASK_A     0x20 IRQ_STATUS_B   0x24 IRQ_REQUEST_B
+ *   0x28 IRQ_MASK_B     0x30 FIQ_STATUS     0x34 FIQ_REQUEST
+ *   0x38 FIQ_MASK
+ *   0x40.. T0 latch lo/hi, GO, LATCH; 0x50.. T1; 0x60.. T2; 0x70.. T3
+ *
+ * IRQ A bits: 7 force(POR), 6 timer1, 5 timer0, 4 POR, 2 IR, 1 IF, 0 IL7.
+ * IRQ B bits: 7 KART Rx full, 6 KART Tx empty, 0-5 IL0-IL5.
+ * Timers 0/1 run at 2 MHz and raise IRQ A bits 5/6 on underflow, reloading
+ * from their latches (continuous). T2/T3 are baud/KART clocks (no IRQ).
+ *
+ * Licence: Apache-2.0 (see LICENSE). Register layout per Acorn IOC
+ * datasheet; behaviour reference only from studied emulators.
+ */
+#ifndef SOPHIE_IOC_H
+#define SOPHIE_IOC_H
+
+#include <stdint.h>
+
+#define IOC_BASE 0x03200000u
+#define IOC_SIZE 0x00200000u
+
+#define IOC_CONTROL       0x00u
+#define IOC_KART          0x04u
+#define IOC_IRQ_STATUS_A  0x10u
+#define IOC_IRQ_REQUEST_A 0x14u
+#define IOC_IRQ_MASK_A    0x18u
+#define IOC_IRQ_STATUS_B  0x20u
+#define IOC_IRQ_REQUEST_B 0x24u
+#define IOC_IRQ_MASK_B    0x28u
+#define IOC_FIQ_STATUS    0x30u
+#define IOC_FIQ_REQUEST   0x34u
+#define IOC_FIQ_MASK      0x38u
+#define IOC_T0_LO 0x40u
+#define IOC_T0_HI 0x44u
+#define IOC_T0_GO 0x48u
+#define IOC_T0_LATCH 0x4Cu
+#define IOC_T1_LO 0x50u
+#define IOC_T2_LO 0x60u
+#define IOC_T3_LO 0x70u
+
+#define IOC_IRA_TIMER0 0x20u
+#define IOC_IRA_TIMER1 0x40u
+#define IOC_IRB_KART_RX_FULL 0x80u
+#define IOC_IRB_KART_TX_EMPTY 0x40u
+
+#define IOC_TIMER_HZ 2000000u /* 2 MHz timers */
+
+typedef struct Machine Machine;
+struct Arm26;
+
+typedef struct Ioc {
+    uint8_t  regs[0x80];
+    uint32_t timer_cnt[4];
+    uint32_t timer_latch[4];
+    uint64_t tick_acc;      /* fractional 2MHz accumulator (CPU cycles/4) */
+    uint8_t  key_queue[16];
+    int      key_head, key_tail;
+    Machine *mach;
+} Ioc;
+
+void ioc_init(Ioc *ioc, Machine *mach);
+
+/* Advance the timers by delta CPU cycles and update the CPU IRQ/FIQ lines. */
+void ioc_tick(Ioc *ioc, struct Arm26 *cpu, uint32_t cycles_delta);
+
+/* Queue a keyboard byte (KART Rx). */
+void ioc_key_press(Ioc *ioc, uint8_t byte);
+
+/* region callbacks for [IOC_BASE, IOC_BASE+IOC_SIZE) */
+uint8_t  ioc_rd8(void *ctx, uint32_t addr);
+void     ioc_wr8(void *ctx, uint32_t addr, uint8_t v);
+uint32_t ioc_rd32(void *ctx, uint32_t addr);
+void     ioc_wr32(void *ctx, uint32_t addr, uint32_t v);
+
+#endif /* SOPHIE_IOC_H */
