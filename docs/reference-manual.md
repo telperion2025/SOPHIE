@@ -226,6 +226,12 @@ re-verified against the ARM ARM:
 - MEMC CAM is not walked (identity map); VIDC sound is register capture
   only; the IOC word-read lane simplification is documented in §4.4.
 - `SWI 0` halt convention (test harness only).
+- Deliberate deviation from the JS reference at the RAM top boundary: the
+  reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
+  unmasked, so the final word of RAM (addr = ramSize−4) reads back with
+  zeroed high bytes there (out-of-bounds `Uint8Array` access). The C bus
+  masks every byte (`mem.c`), matching real hardware; pinned by the
+  `ram-top-word-masked` check in `mmio_test`.
 
 ## 8. Traceability matrix (test → spec)
 
@@ -237,7 +243,7 @@ re-verified against the ARM ARM:
 | `arm26_test`: swp-*, mul-42 | SWP, MUL (§2) |
 | `arm26_test`: swi-*, rti-*, undef-*, irq-*, teqp-usr | exception entry, banking, CPSR restore, mode switch (§2, §9) |
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
-| `mmio_test` (7 checks) | WP2 acceptance: registry dispatch, CPU-to-device, open bus, priority, RAM regression (§10 WP2) |
+| `mmio_test` (8 checks) | WP2 acceptance: registry dispatch, CPU-to-device, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `machine_test` (13 checks) | WP3 acceptance: dummy-ROM boot, memory R/W, timer IRQs, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 

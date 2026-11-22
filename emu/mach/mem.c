@@ -4,12 +4,14 @@
  */
 #include "mem.h"
 
+#include <assert.h>
 #include <string.h>
 
 void mem_bus_init(mem_bus *bus, uint8_t *ram, uint32_t ram_size)
 {
     memset(bus, 0, sizeof *bus);
     if (ram != NULL) {
+        assert(ram_size != 0 && (ram_size & (ram_size - 1)) == 0);
         /* ram_size must be a power of two so the mask is exact */
         bus->ram_region.base = 0;
         bus->ram_region.size = ram_size;

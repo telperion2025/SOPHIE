@@ -168,5 +168,16 @@ int main(void)
         check("region-priority-first-wins", m.dev.wr_count == 1 && dev2.wr_count == 0, det);
     }
 
+    /* final word of the RAM region: every byte is masked, so the top word
+     * round-trips correctly (the JS reference leaves bytes a+1..a+3 unmasked
+     * there; see docs/reference-manual.md section 7) */
+    {
+        MmioRig m; mmio_rig_init(&m);
+        mem_wr32(&m.core.bus, RIG_RAM_SIZE - 4, 0xAABBCCDDu);
+        uint32_t v = mem_rd32(&m.core.bus, RIG_RAM_SIZE - 4);
+        snprintf(det, sizeof det, "v=%" PRIx32, v);
+        check("ram-top-word-masked", v == 0xAABBCCDDu, det);
+    }
+
     return test_summary("mmio") ? 1 : 0;
 }

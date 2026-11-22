@@ -91,7 +91,7 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
       case IOC_KART:
         ioc->regs[IOC_IRQ_STATUS_B] &= (uint8_t)~IOC_IRB_KART_TX_EMPTY;
         ioc->regs[IOC_KART] = v;
-        return; /* no line update needed */
+        break;
       default:
         if (r >= IOC_T0_LO && r <= IOC_T3_LO + 0x0C) {
             ioc->regs[r] = v;
