@@ -47,8 +47,10 @@ bug-compatible with that reference (see §7 known limitations).
 26-bit exception entry (`exception()`): banked `r14_mode := old CPSR`;
 `CPSR := (NZCV preserved) | I set | (F set for FIQ) | vector | new mode`.
 Vectors: RESET 0x00, UNDEF 0x04, SWI 0x08, PABT 0x0C, DABT 0x10, IRQ 0x18,
-FIQ 0x1C. IRQ/FIQ lines (`irqPending`/`fiqPending`) are sampled between
-instructions and taken only when the corresponding mask bit is clear.
+FIQ 0x1C. DABT is raised by the memory bus (§3) when a USR-mode data access
+lands in the abort window; `lr_svc` holds the faulting pc+4. IRQ/FIQ lines
+(`irqPending`/`fiqPending`) are sampled between instructions and taken only
+when the corresponding mask bit is clear.
 **Test-exit convention:** `SWI 0` halts the run loop without an exception
 (harness use only; ROM code never sees it).
 
@@ -122,6 +124,19 @@ A region provides `rd8/wr8` (mandatory for device regions) and optionally
 Unmapped reads return 0xFF per byte (open bus) and unmapped writes are
 ignored; both are counted in `bus.unmapped_rd`/`unmapped_wr`.
 
+The bus also models the MEMC data-abort line: a **data** access to the
+supervisor-only window `[bus.io_base, bus.io_base+bus.io_size)` while
+`bus.user_mode` is set aborts instead of reaching the device (read returns
+open bus, write is dropped) and latches `bus.dabt`/`dabt_addr`/`dabt_count`.
+Instruction fetches (`bus.fetch` set by the core around the opcode read) are
+exempt, and the core drives `user_mode` only around its own accesses, so
+host/device bus users never abort. After the faulting instruction the core
+takes a DABT exception (vector 0x10, SVC mode, `lr_svc` = faulting pc+4).
+The base machine enables the window for the unclaimed podule/expansion space
+0x03000000-0x031FFFFF only: POST's own mode test performs USR-mode access to
+claimed devices (VIDC/ROM window), so a blanket supervisor-only I/O abort is
+not A310/MEMC1a behaviour (see §4.1).
+
 ## 4. Archimedes base machine (`emu/mach/machine.[ch]`)
 
 ### 4.1 Memory map
@@ -130,7 +145,7 @@ ignored; both are counted in `bus.unmapped_rd`/`unmapped_wr`.
 | --- | --- |
 | 0x00000000–0x01FFFFFF | logical window via MEMC — **boot ROM latched at reset**, then CAM-walked to physical DRAM |
 | 0x02000000–(0x02000000+ram_size) | physical DRAM window (`is_ram`, direct alias); beyond installed RAM up to 0x02FFFFFF reads as open bus (0xFF), writes are dropped |
-| 0x03000000–0x031FFFFF | podule/expansion space (stub, reads 0xFF) |
+| 0x03000000–0x031FFFFF | podule/expansion space (stub, reads 0xFF); unclaimed: USR-mode data accesses data-abort here (§3), instruction fetches exempt |
 | 0x03200000–0x033FFFFF | IOC (registers at low 0x80, mirrored; 1 MHz peripheral bus at +0x10000: peripheral 5 at 0x03250000 holds the floppy latches, the WD1772 block sits at 0x03310000; other blocks stub) |
 | 0x03250018 | floppy latch B (bit 1 DDEN, bit 3 master reset, active low) |
 | 0x03250040 | floppy latch A (bits 0-3 drive select active-low, bit 4 side, bit 5 motor active-low) |
@@ -390,10 +405,18 @@ Remaining known limitations:
   floppy. CMOS/RTC (PCF8583) is now modelled (§4.4a) and RISC OS 3.00 POST
   passes its configuration stage. The physical DRAM window decodes only the
   installed RAM (open bus beyond), which removed the POST reboot crash;
-  POST's long RAM test still derails the boot because its fill wraps the
-  26-bit address space over the test stub itself — on real hardware that
-  path is cut short by MEMC data-abort behaviour at the supervisor-only I/O
-  window, which this tier does not model (M3 continues: data-abort model).
+  The MEMC data-abort line is now modelled (§3) and enabled for the
+  unclaimed podule/expansion window: POST's memory-test stub (which runs in
+  USR mode) is cut off at 0x03000000 instead of wrapping the 26-bit space
+  over itself (a blanket supervisor-only I/O abort is *not* A310 behaviour:
+  POST's own mode test does USR-mode VIDC/ROM access, and ARM2 has no mode
+  output pin, so claimed devices stay USR-accessible). M2 is still not fully
+  reached: POST never maps logical page 0 before the memory test in this
+  emulation (only logical page 512 is CAM-written), so after the stub the
+  exception vectors read open bus and boot ends in an unmapped-logical march
+  rather than the OS idle loop (next: trace why POST's logical-page-0/vector
+  setup is skipped — the dispatch flags in `ip` are clobbered by the I2C
+  bitbang).
 - `SWI 0` halt convention (test harness only).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
@@ -427,7 +450,7 @@ Remaining known limitations:
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
-| `machine_test` (21 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a) |
+| `machine_test` (24 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a), plus MEMC data-abort: USR-mode podule access aborts to vector 0x10 with `lr_svc`=faulting pc+4 while SVC/claimed-device/fetch accesses stay abort-free (§3) |
 | `fdc_test` (33 checks) | WP7 acceptance: WD1772 register map/status/command model, DRQ/INTRQ→IOC FIQ FH0/FH1, latches A/B, type I + read/write sector + read address + force interrupt + master reset against disc images, plus guest-code end-to-end sector read (§10 WP7; WD1772 datasheet) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 

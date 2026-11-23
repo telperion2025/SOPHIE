@@ -40,7 +40,8 @@ int main(int argc, char **argv)
            m.cpu.r[15] & PC_MASK, m.cpu.r[15] & 3, m.cpu.r[15]);
     printf("memc: latchrom=%d pagesize_idx=%d pages[0]=%d ctrl=%08" PRIx32 " vidstart=%08" PRIx32 "\n",
            m.memc.latchrom, m.memc.pagesize_idx, m.memc.pages[0], m.memc.ctrl, m.memc.vidstart);
-    printf("bus: unmapped rd=%" PRIu64 " wr=%" PRIu64 "\n", m.bus.unmapped_rd, m.bus.unmapped_wr);
+    printf("bus: unmapped rd=%" PRIu64 " wr=%" PRIu64 " dabts=%" PRIu64 " dabt_addr=%08" PRIx32 "\n",
+           m.bus.unmapped_rd, m.bus.unmapped_wr, m.bus.dabt_count, m.bus.dabt_addr);
     printf("fdc: status=%02x track=%u sector=%u curtrack=%d intrq=%d drq=%d fiq_status=%02x\n",
            m.fdc.status, m.fdc.track, m.fdc.sector, m.fdc.curtrack, m.fdc.intrq, m.fdc.drq,
            m.ioc.regs[IOC_FIQ_STATUS]);

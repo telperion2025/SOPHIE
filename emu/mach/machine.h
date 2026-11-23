@@ -6,7 +6,9 @@
  *                          reset; CAM-walked to DRAM after the CAM is set up)
  *   0x02000000-...       physical DRAM window: installed RAM only
  *                          (0x02000000+ram_size onward is open bus)
- *   0x03000000-0x031FFFFF  podule/expansion space (stub)
+ *   0x03000000-0x031FFFFF  podule/expansion space (unclaimed: USR-mode data
+ *                          accesses data-abort here; instruction fetches
+ *                          exempt; claimed devices below stay USR-accessible)
  *   0x03200000-0x033FFFFF  IOC (registers at low 0x80, 1MHz bus above 0x10000;
  *                          peripheral 5 at 0x03250000 holds the floppy
  *                          latches, the WD1772 block sits at 0x03310000)

@@ -12,10 +12,47 @@
 
 /* ---------- memory ---------- */
 
-uint8_t arm26_rd8(Arm26 *cpu, uint32_t a)  { return mem_rd8(cpu->mem, a & ADDR_MASK); }
-void    arm26_wr8(Arm26 *cpu, uint32_t a, uint8_t v)  { mem_wr8(cpu->mem, a & ADDR_MASK, v); }
-uint32_t arm26_rd32(Arm26 *cpu, uint32_t a) { return mem_rd32(cpu->mem, a & ADDR_MASK); }
-void    arm26_wr32(Arm26 *cpu, uint32_t a, uint32_t v) { mem_wr32(cpu->mem, a & ADDR_MASK, v); }
+/* CPU accesses drive the bus abort context: user_mode reflects the current
+ * mode (MEMC1a supervisor-only I/O window aborts USR-mode data accesses)
+ * and is cleared again right after, so host/device bus users never see it.
+ * fetch is set by arm26_run only around the instruction fetch. */
+static uint32_t arm26_bus_addr(Arm26 *cpu, uint32_t a)
+{
+    cpu->mem->user_mode = (arm26_mode(cpu) == MODE_USR);
+    return a & ADDR_MASK;
+}
+
+static void arm26_bus_end(Arm26 *cpu) { cpu->mem->user_mode = 0; }
+
+uint8_t arm26_rd8(Arm26 *cpu, uint32_t a)
+{
+    a = arm26_bus_addr(cpu, a);
+    uint8_t v = mem_rd8(cpu->mem, a);
+    arm26_bus_end(cpu);
+    return v;
+}
+
+void arm26_wr8(Arm26 *cpu, uint32_t a, uint8_t v)
+{
+    a = arm26_bus_addr(cpu, a);
+    mem_wr8(cpu->mem, a, v);
+    arm26_bus_end(cpu);
+}
+
+uint32_t arm26_rd32(Arm26 *cpu, uint32_t a)
+{
+    a = arm26_bus_addr(cpu, a);
+    uint32_t v = mem_rd32(cpu->mem, a);
+    arm26_bus_end(cpu);
+    return v;
+}
+
+void arm26_wr32(Arm26 *cpu, uint32_t a, uint32_t v)
+{
+    a = arm26_bus_addr(cpu, a);
+    mem_wr32(cpu->mem, a, v);
+    arm26_bus_end(cpu);
+}
 
 void arm26_load_program(Arm26 *cpu, const uint32_t *words, size_t n, uint32_t base)
 {
@@ -268,10 +305,18 @@ void arm26_run(Arm26 *cpu, uint64_t n)
 {
     while (n-- > 0 && !cpu->halted) {
         uint32_t a = cpu->r[15] & PC_MASK;
+        cpu->mem->fetch = 1; /* instruction fetches never data-abort */
         uint32_t ins = arm26_rd32(cpu, a);
+        cpu->mem->fetch = 0;
         cpu->r[15] = (cpu->r[15] & ~PC_MASK) | ((a + 4) & PC_MASK);
         cpu->cycles++;
         execute(cpu, a, ins);
+        if (cpu->mem->dabt) {
+            /* MEMC1a data abort: LR_svc := old CPSR (PC field already holds
+             * faulting pc+4), vector 0x10, SVC mode, I set */
+            cpu->mem->dabt = 0;
+            exception(cpu, VEC_DABT, MODE_SVC, 0);
+        }
         service_interrupts(cpu);
     }
 }

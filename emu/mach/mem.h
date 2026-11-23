@@ -39,6 +39,18 @@ typedef struct mem_bus {
     mem_region *regions;    /* linked list, head first = highest priority */
     uint64_t    unmapped_rd;
     uint64_t    unmapped_wr;
+    /* MEMC1a supervisor-only I/O window: a data access to
+     * [io_base, io_base+io_size) while user_mode is set aborts instead of
+     * reaching the device (read returns open bus, write is dropped) and
+     * latches the dabt flag. Instruction fetches (fetch set) are exempt, as
+     * are privileged modes. Only the CPU core drives fetch/user_mode, and
+     * only around its own accesses, so host/device bus users never abort. */
+    int      io_abort_en;
+    uint32_t io_base, io_size;
+    int      fetch, user_mode;
+    int      dabt;
+    uint32_t dabt_addr;
+    uint64_t dabt_count;
 } mem_bus;
 
 /* Initialise a bus whose head region is flat RAM at [0, ram_size).

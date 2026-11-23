@@ -187,6 +187,62 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_SPIN;
 }
 
+/* ---------- second dummy ROM: data-abort (MEMC unclaimed I/O in USR mode) ---------- */
+
+#define W2_START 0x40u   /* byte 0x100 */
+#define W2_DABT  0x60u   /* byte 0x180: DABT handler */
+
+/* Build a ROM that (latchrom stays set, vectors come from ROM):
+ *  - in SVC mode: read IOC (claimed device) - must not abort
+ *  - TEQP to USR mode
+ *  - in USR mode: read IOC again - claimed device, must not abort
+ *  - in USR mode: read podule space 0x03000000 - must data-abort (vector 0x10)
+ * The DABT handler stores 0xAB and lr_svc at physical 0x02003008/0x0200300C. */
+static void build_dabt_rom(uint32_t *rom, int *fault_word)
+{
+    memset(rom, 0, ROM_WORDS * 4);
+    rom[0x00] = A_B(0x00000000u, ROM_BASE_ADDR + W2_START * 4);
+    rom[0x04] = A_B(0x00000010u, ROM_BASE_ADDR + W2_DABT * 4); /* DABT vector */
+
+    uint32_t *c = rom + W2_START;
+    uint32_t pc = ROM_BASE_ADDR + W2_START * 4;
+    *c++ = A_MOV_IMM(2, 0x32);       pc += 4;
+    *c++ = A_MOV_LSL(2, 2, 20);      pc += 4;   /* r2 = 0x03200000 (IOC, claimed) */
+    *c++ = A_MOV_IMM(3, 0x20);       pc += 4;
+    *c++ = A_MOV_LSL(3, 3, 20);      pc += 4;   /* r3 = 0x02000000 */
+    *c++ = A_ADD_IMM(3, 3, 0x3000);  pc += 4;   /* r3 = 0x02003000 (marker block) */
+    /* SVC-mode IOC read: ok, no abort; marker[0] = 0x11 */
+    *c++ = A_LDR(4, 2, 0);           pc += 4;
+    *c++ = A_MOV_IMM(5, 0x11);       pc += 4;
+    *c++ = A_STR(5, 3, 0);           pc += 4;
+    /* switch to USR mode: CPSR := I|F|pc|USR via TEQP (r0 = I|F|USR) */
+    *c++ = A_MOV_IMM(0, 0x0C000000u); pc += 4;
+    *c++ = A_TEQP(0);                pc += 4;
+    /* USR-mode IOC read: claimed device, must not abort; marker[4] = 0x22 */
+    *c++ = A_LDR(4, 2, 0);           pc += 4;
+    *c++ = A_MOV_IMM(5, 0x22);       pc += 4;
+    *c++ = A_STR(5, 3, 4);           pc += 4;
+    /* USR-mode podule read 0x03000000: data abort */
+    *c++ = A_MOV_IMM(5, 0x30);       pc += 4;
+    *c++ = A_MOV_LSL(5, 5, 20);      pc += 4;   /* r5 = 0x03000000 */
+    *fault_word = (int)(c - rom);
+    *c++ = A_LDR(6, 5, 0);           pc += 4;   /* <-- faults: dabt_addr 0x03000000 */
+    /* unreached: marker[8] = 0xEE */
+    *c++ = A_MOV_IMM(5, 0xEE);       pc += 4;
+    *c++ = A_STR(5, 3, 8);           pc += 4;
+    *c++ = A_SPIN;                   pc += 4;
+
+    /* DABT handler (SVC mode): marker[8] = 0xAB, marker[0xC] = lr_svc, spin */
+    c = rom + W2_DABT;
+    *c++ = A_MOV_IMM(3, 0x20);
+    *c++ = A_MOV_LSL(3, 3, 20);
+    *c++ = A_ADD_IMM(3, 3, 0x3000);  /* r3 = 0x02003000 */
+    *c++ = A_MOV_IMM(5, 0xAB);
+    *c++ = A_STR(5, 3, 8);
+    *c++ = A_STR(14, 3, 0x0C);      /* lr_svc */
+    *c++ = A_SPIN;
+}
+
 /* ---------- I2C bitbang helpers over IOC CONTROL (SDA=C0, SCL=C1) ---------- */
 
 static void i2c_set(Machine *m, int sda, int scl)
@@ -400,6 +456,37 @@ int main(void)
     check("vidc-render-pixel-red", p0 == 0xFF0000u, det);
     snprintf(det, sizeof det, "fb[10,27]=%" PRIx32, p1);
     check("vidc-render-pixel-blue", p1 == 0x0000FFu, det);
+
+    /* MEMC data abort: USR-mode data access to unclaimed I/O (podule space)
+     * aborts to vector 0x10 with lr_svc = faulting pc+4; claimed devices
+     * (IOC) and instruction fetches stay accessible in USR mode */
+    {
+        static uint8_t ram2[0x400000];
+        static uint32_t rom2[ROM_WORDS];
+        int fault_word = 0;
+        build_dabt_rom(rom2, &fault_word);
+        Machine m2;
+        machine_init(&m2, ram2, sizeof ram2, (uint8_t *)rom2, ROM_WORDS * 4);
+        machine_run(&m2, 100000);
+
+        uint32_t m0 = mem_rd32(&m2.bus, 0x02003000u);
+        snprintf(det, sizeof det, "marker0=%02x (SVC IOC read)", m0);
+        check("dabt-svc-device-read-ok", m0 == 0x11, det);
+
+        uint32_t m4 = mem_rd32(&m2.bus, 0x02003004u);
+        snprintf(det, sizeof det, "marker4=%02x (USR IOC read, claimed device)", m4);
+        check("dabt-usr-claimed-device-ok", m4 == 0x22, det);
+
+        uint32_t m8 = mem_rd32(&m2.bus, 0x02003008u);
+        uint32_t lrsvc = mem_rd32(&m2.bus, 0x0200300Cu);
+        uint32_t fault_pc = ROM_BASE_ADDR + (uint32_t)fault_word * 4;
+        uint32_t lr_expect = 0x0C000000u | ((fault_pc + 4) & PC_MASK) | MODE_USR;
+        snprintf(det, sizeof det, "marker8=%02x lr_svc=%08x expect=%08x dabts=%" PRIu64 " dabt_addr=%08x mode=%u",
+                 m8, lrsvc, lr_expect, m2.bus.dabt_count, m2.bus.dabt_addr, m2.cpu.r[15] & 3);
+        check("dabt-usr-podule-aborts-to-vector",
+              m8 == 0xAB && lrsvc == lr_expect && m2.bus.dabt_count == 1 &&
+              m2.bus.dabt_addr == 0x03000000u && (m2.cpu.r[15] & 3) == MODE_SVC, det);
+    }
 
     return test_summary("machine") ? 1 : 0;
 }

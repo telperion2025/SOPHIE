@@ -123,6 +123,16 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     region_init(&m->r_rom, MACH_ROM_BASE, MACH_ROM_SIZE, m,
                 mach_rom_rd8, mach_rom_wr8, mach_rom_rd32, mach_rom_wr32);
     mem_region_add(&m->bus, &m->r_rom);
+
+    /* MEMC1a: accesses to unclaimed I/O space (podule/expansion
+     * 0x03000000-0x031FFFFF, no device responding) data-abort in USR mode
+     * (instruction fetches are exempt). Claimed devices (IOC/VIDC/MEMC/ROM
+     * window) stay accessible in USR mode - POST's own mode test does
+     * USR-mode device access, so a blanket supervisor-only I/O abort is not
+     * A310 behaviour. */
+    m->bus.io_abort_en = 1;
+    m->bus.io_base = MACH_PODULE_BASE;
+    m->bus.io_size = 0x03200000u - MACH_PODULE_BASE;
 }
 
 int machine_disc_attach(Machine *m, int drive, const char *path, int wprot)
