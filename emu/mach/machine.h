@@ -9,7 +9,8 @@
  *   0x03200000-0x033FFFFF  IOC (registers at low 0x80, 1MHz bus above 0x10000)
  *   0x03400000-0x035FFFFF  VIDC (write-only registers)
  *   0x03600000-0x037FFFFF  MEMC registers
- *   0x03800000-0x03BFFFFF  ROM (reads return ROM; writes program the MEMC CAM)
+ *   0x03800000-0x03FFFFFF  ROM window, image mirrored over the full 8MB
+ *                          (reads return ROM; writes program the MEMC CAM)
  *
  * machine_run() executes instructions and advances the IOC timers, so
  * IRQ-driven guest loops work. Host video/input frontends (WP5) attach to
@@ -35,7 +36,9 @@
 #define MACH_PODULE_BASE  0x03000000u
 #define MACH_PODULE_SIZE  0x00200000u
 #define MACH_ROM_BASE     0x03800000u
-#define MACH_ROM_SIZE     0x00400000u
+#define MACH_ROM_SIZE     0x00800000u /* full 8MB ROM window 0x03800000-0x03FFFFFF; the
+                                          * ROM chip sees the low address bits, so the
+                                          * image mirrors across the window (A25:A23=111) */
 
 typedef struct Machine {
     mem_bus  bus;

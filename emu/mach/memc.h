@@ -9,7 +9,7 @@
  * page; page size is 4K/8K/16K/32K selected by control-register bits 3:2.
  *
  * CAM page entries are written by storing a data-encoded word anywhere in
- * the ROM window 0x03800000-0x03BFFFFF (reads there still return ROM).
+ * the ROM window 0x03800000-0x03FFFFFF (reads there still return ROM).
  * MEMC registers are written anywhere in 0x03600000-0x037FFFFF with the
  * register index encoded in the data (see memc_reg_w).
  *

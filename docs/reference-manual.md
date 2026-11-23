@@ -128,7 +128,7 @@ ignored; both are counted in `bus.unmapped_rd`/`unmapped_wr`.
 | 0x03200000–0x033FFFFF | IOC (registers at low 0x80, mirrored; 1 MHz peripheral bus at +0x10000, stub) |
 | 0x03400000–0x035FFFFF | VIDC (write-only registers) |
 | 0x03600000–0x037FFFFF | MEMC registers |
-| 0x03800000–0x03BFFFFF | ROM (reads return ROM; **writes program the MEMC CAM**) |
+| 0x03800000–0x03FFFFFF | ROM window, 8MB: image mirrors across it (reads return ROM; **writes program the MEMC CAM**) |
 
 ```c
 void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size);
@@ -149,7 +149,7 @@ layout (see §10 for the facts-only boundary):
   latch, as on real hardware.
 - **CAM**: 0x2000 entries, one per logical page. Page size 4K/8K/16K/32K is
   selected by control-register bits 3:2. Page entries are written by storing
-  a data-encoded word anywhere in the ROM window 0x03800000–0x03BFFFFF:
+  a data-encoded word anywhere in the ROM window 0x03800000–0x03FFFFFF:
   logical page, physical page, MEMC id and 2-bit protection level are packed
   per page size (e.g. 4K: `11 1LLL LLLL LLLL LLAA MPPP PPPP`). Writing a page
   first unmaps any other logical page resolving to the same physical page.
@@ -314,7 +314,7 @@ Remaining known limitations:
 | `arm26_test`: swi-*, rti-*, undef-*, irq-*, teqp-usr | exception entry, banking, CPSR restore, mode switch (§2, §9) |
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
-| `machine_test` (17 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3/WP4) |
+| `machine_test` (18 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3/WP4) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 
 The whole suite is the acceptance criterion for the future RISC-V and

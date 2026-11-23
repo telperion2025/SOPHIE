@@ -26,7 +26,11 @@ static uint8_t mach_rom_rd8(void *ctx, uint32_t addr)
     Machine *m = ctx;
     m->memc.latchrom = 0; /* any high-space access drops the boot-ROM latch */
     uint32_t off = addr - MACH_ROM_BASE;
-    return off < m->rom_size ? m->rom[off] : 0xFF;
+    /* the ROM chip sees only the low address bits: the image mirrors across
+     * the 8MB window (rom_size is a power of two) */
+    if (off < m->rom_size)
+        return m->rom[off];
+    return (m->rom_size & (m->rom_size - 1)) == 0 ? m->rom[off & (m->rom_size - 1)] : 0xFF;
 }
 
 static uint32_t mach_rom_rd32(void *ctx, uint32_t addr)

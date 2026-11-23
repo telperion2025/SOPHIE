@@ -233,6 +233,12 @@ int main(void)
     uint32_t rom0 = mem_rd32(&m.bus, ROM_BASE_ADDR);
     check("rom-window-readable", rom0 == A_B(0x00000000u, ROM_BASE_ADDR + W_START * 4), "reset vector in ROM");
 
+    /* the ROM image mirrors across the full 8MB window (0x03800000-0x03FFFFFF):
+     * 0x03C00100 aliases ROM offset 0x100 (2KB dummy ROM) */
+    uint32_t mir = mem_rd32(&m.bus, 0x03C00100u);
+    snprintf(det, sizeof det, "mirror=%08" PRIx32 " expect=%08" PRIx32, mir, rom[0x40]);
+    check("rom-window-mirrored", mir == rom[0x40], det);
+
     uint8_t irqmask = mem_rd8(&m.bus, 0x03200000u + 0x18);
     snprintf(det, sizeof det, "IRQ_MASK_A=%" PRIx32, irqmask);
     check("ioc-irq-mask", irqmask == 0x28, det);
