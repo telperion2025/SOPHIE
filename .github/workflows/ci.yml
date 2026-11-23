@@ -15,7 +15,7 @@ jobs:
       - name: Build (C11, make)
         run: make
 
-      - name: Test suite (arm26 45 + arm26_ext 15 + mmio 9 + machine 24 + host 11 + fdc 33 assertions)
+      - name: Test suite (arm26 50 + arm26_ext 15 + mmio 9 + machine 24 + host 11 + fdc 33 assertions)
         run: make test
 
       - name: Benchmark (C core vs JS reference)

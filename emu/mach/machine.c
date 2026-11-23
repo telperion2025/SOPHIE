@@ -87,6 +87,9 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
 
     mem_bus_init(&m->bus, NULL, 0); /* no flat head region: logical window is a device */
     arm26_init(&m->cpu, &m->bus);
+    /* A booting ROM gets real SWI exceptions: SWI 0 is OS_WriteC in RISC OS,
+     * not the test-exit halt. */
+    m->cpu.swi0_halt = 0;
     memc_init(&m->memc, m);
     vidc_init(&m->vidc, m);
     ioc_init(&m->ioc, m);

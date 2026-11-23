@@ -37,9 +37,12 @@ bug-compatible with that reference (see §7 known limitations).
   `bankIrq`, `bankFiq`).
 - `r[15]` = CPSR: bits 31:28 NZCV, bit 27 I, bit 26 F, bits 25:2 PC
   (`PC_MASK = 0x03FFFFFC`), bits 1:0 mode (`MODE_USR/FIQ/IRQ/SVC`).
-- When r15 is read as an operand during the instruction at address `a`, it
-  reads as `(r15 & 0xFC000000) | ((a+8) & PC_MASK) | (r15 & 3)`
-  (`arm26_pc_operand`).
+- r15 as an operand during the instruction at address `a` (Acorn 26-bit
+  rule): as **Rm** it reads as `(r15 & 0xFC000000) | ((a+8) & PC_MASK) |
+  (r15 & 3)` (`arm26_pc_operand`) — flags and mode included; as the **first
+  operand Rn** of a data-processing instruction, or as the base register of
+  LDR/STR/LDM/STM/SWP, only the 24 PC bits are presented and all PSR bits
+  (flags 31:26 and mode 1:0) are supplied as zero.
 - Reset state: I and F set, SVC mode, PC 0 (`arm26_reset`).
 
 ### 2.2 Exceptions
@@ -51,8 +54,11 @@ FIQ 0x1C. DABT is raised by the memory bus (§3) when a USR-mode data access
 lands in the abort window; `lr_svc` holds the faulting pc+4. IRQ/FIQ lines
 (`irqPending`/`fiqPending`) are sampled between instructions and taken only
 when the corresponding mask bit is clear.
-**Test-exit convention:** `SWI 0` halts the run loop without an exception
-(harness use only; ROM code never sees it).
+**Test-exit convention:** while `swi0_halt` is set (the default after
+`arm26_reset`; used by the test harnesses), `SWI 0` halts the run loop
+without an exception. The machine clears `swi0_halt` in `machine_init`, so
+a booting ROM gets a real SWI exception — RISC OS defines SWI 0 as
+OS_WriteC, which the ROMs call while printing boot messages.
 
 ### 2.3 Instruction coverage (v1)
 
@@ -342,7 +348,10 @@ downward carry-fold checksums), empty "Hugo" root directory "$" in sectors
 ## 5. Tests (`emu/tests/`)
 
 - `arm26_test.c` — the 45-assertion suite transplanted verbatim from spec
-  Appendix B (test names match one-to-one).
+  Appendix B (test names match one-to-one), plus 5 added checks pinning the
+  26-bit r15 operand rules (Rn zeroes the PSR, Rm keeps it), LDR Rd==Rn
+  load-wins writeback ordering, and SWI 0 vectoring when `swi0_halt` is
+  cleared (50 checks total).
 - `arm26_ext_test.c` — WP6 extension tests (15 checks): group-011
   register-offset LDR/STR incl. negative offset + writeback, LDRH/STRH
   immediate and register forms with writeback, LDRSB/LDRSH sign extension,
@@ -400,24 +409,27 @@ Remaining known limitations:
   (§4.3/§4.4), and the WD1772 floppy controller with disc images is modelled
   (§4.6, WP7) — but the full podule/1MHz bus, CMOS/RTC and hard-disc
   (HD63463/IDE) are still stubs, and the WD1772 write-track (format) command
-  discards data, so real-ROM boot still stops short of the desktop (WP7/M3
-  continue: RISC OS 3.00 POSTs and idles in its OS loop without probing the
-  floppy. CMOS/RTC (PCF8583) is now modelled (§4.4a) and RISC OS 3.00 POST
-  passes its configuration stage. The physical DRAM window decodes only the
-  installed RAM (open bus beyond), which removed the POST reboot crash;
-  The MEMC data-abort line is now modelled (§3) and enabled for the
-  unclaimed podule/expansion window: POST's memory-test stub (which runs in
-  USR mode) is cut off at 0x03000000 instead of wrapping the 26-bit space
-  over itself (a blanket supervisor-only I/O abort is *not* A310 behaviour:
-  POST's own mode test does USR-mode VIDC/ROM access, and ARM2 has no mode
-  output pin, so claimed devices stay USR-accessible). M2 is still not fully
-  reached: POST never maps logical page 0 before the memory test in this
-  emulation (only logical page 512 is CAM-written), so after the stub the
-  exception vectors read open bus and boot ends in an unmapped-logical march
-  rather than the OS idle loop (next: trace why POST's logical-page-0/vector
-  setup is skipped — the dispatch flags in `ip` are clobbered by the I2C
-  bitbang).
-- `SWI 0` halt convention (test harness only).
+  discards data, so real-ROM boot still stops short of the desktop (M3
+  continues). **M2 is reached**: with the 26-bit r15-as-Rn PSR-zero rule and
+  the LDR Rd==Rn load-wins writeback order in the core, plus `swi0_halt`
+  cleared for the machine (SWI 0 = OS_WriteC), the ROM300 POST completes,
+  the kernel installs its SWI/IRQ vectors in RAM and dispatches SWIs from
+  kernel code in DRAM, and boot settles into a stable SVC-mode polling loop
+  (0x0381c9xx/0x0381d2xx region) that repeats unchanged for 5e9 cycles with
+  zero data aborts and zero reboots (`tools/romboot roms/ROM300 5000000000`);
+  ROM200 likewise runs 3e9 cycles stably, ending in USR mode. CMOS/RTC
+  (PCF8583) is modelled (§4.4a) and RISC OS 3.00 POST passes its
+  configuration stage. The physical DRAM window decodes only the installed
+  RAM (open bus beyond), which removed the POST reboot crash; the MEMC
+  data-abort line is modelled (§3) and enabled for the unclaimed
+  podule/expansion window: POST's memory-test stub is cut off at 0x03000000
+  instead of wrapping the 26-bit space over itself (a blanket
+  supervisor-only I/O abort is *not* A310 behaviour: POST's own mode test
+  does USR-mode VIDC/ROM access, and ARM2 has no mode output pin, so claimed
+  devices stay USR-accessible).
+- `SWI 0` halt convention, gated by `swi0_halt`: set by `arm26_reset` so
+  the test harnesses can exit, cleared by `machine_init` so a booting ROM
+  gets a real SWI exception (RISC OS SWI 0 = OS_WriteC).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
   unmasked, so the final word of RAM (addr = ramSize−4) reads back with
@@ -434,8 +446,16 @@ Remaining known limitations:
   supplied as zero (the 26-bit ARM first-operand rule), so `LDR [pc,#imm]`
   is word-aligned in any mode; the JS reference supplies the full r15
   (flags|mode included) and therefore rotates such loads by the mode bits.
-  Data-processing operand reads of r15 keep the reference behaviour
-  (full flags|PC|mode). Needed for real RISC OS ROM literal pools.
+  Data-processing reads of r15 as **Rm** keep the reference behaviour (full
+  flags|PC|mode), but as **Rn** the C core now supplies PSR bits as zero
+  (PC+8 only), matching the Acorn PRM Appendix B rule ("when R15 is used in
+  the Rn or Rs positions, it gives the PC without the PSR flags") — this is
+  what keeps the ROM300 POST mode-test chain in SVC/FIQ instead of derailing
+  into USR mode. Similarly, on a load with writeback where Rd==Rn (e.g. the
+  ROM's linked-list walk `ldr fp,[fp],#0`), the C core lets the loaded value
+  win over the base writeback (ARM2 silicon; Acorn calls the combination
+  "ambiguous"), while the JS reference lets the writeback win. Needed for
+  real RISC OS ROM literal pools and list walks.
 
 ## 8. Traceability matrix (test → spec)
 
@@ -448,6 +468,7 @@ Remaining known limitations:
 | `arm26_test`: swp-*, mul-42 | SWP, MUL (§2) |
 | `arm26_test`: swi-*, rti-*, undef-*, irq-*, teqp-usr | exception entry, banking, CPSR restore, mode switch (§2, §9) |
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
+| `arm26_test`: rn15-psr-zero, rm15-keeps-psr, ldr-rd-rn-*-load-wins, swi0-vectors | 26-bit r15 operand rules (Rn zeroes PSR, Rm keeps it), LDR Rd==Rn load-wins writeback order, SWI 0 vectoring when `swi0_halt`=0 (§2.1, §2.2; Acorn PRM App. B, RISC OS PRM) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
 | `machine_test` (24 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a), plus MEMC data-abort: USR-mode podule access aborts to vector 0x10 with `lr_svc`=faulting pc+4 while SVC/claimed-device/fetch accesses stay abort-free (§3) |

@@ -16,8 +16,9 @@
  * ISA-portable: no endianness or alignment assumptions (PowerPC plan,
  * spec section 3).
  *
- * Test-exit convention: SWI 0 halts the run loop without an exception.
- * ROM-side code never sees it.
+ * Test-exit convention: while swi0_halt is set, SWI 0 halts the run loop
+ * without an exception (used by the test suites). The machine clears
+ * swi0_halt so a booting ROM gets a real SWI exception (SWI 0 = OS_WriteC).
  *
  * Licence: Apache-2.0 (see LICENSE). Implemented from the ARM ARM and the
  * specification only; no code derived from GPL'd emulators.
@@ -65,7 +66,8 @@ typedef struct Arm26 {
     int      irqPending;
     int      fiqPending;
     uint64_t cycles;
-    int      halted;       /* set by SWI 0 (test-exit convention) */
+    int      halted;       /* set by SWI 0 when swi0_halt is enabled (test-exit convention) */
+    int      swi0_halt;    /* 1: SWI 0 halts instead of vectoring (tests); 0: SWI 0 = OS_WriteC (ROM) */
     mem_bus *mem;
 } Arm26;
 

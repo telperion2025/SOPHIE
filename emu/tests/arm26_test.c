@@ -393,6 +393,61 @@ static void t_swi0_halts(void)
     check("halt", g.cpu.halted && g.cpu.r[0] == 0, "SWI 0 stops the run loop");
 }
 
+/* 43. r15 as first operand (Rn) of data processing: PSR bits supplied as zero */
+static void t_rn15_psr_zero(void)
+{
+    Rig g; rig_init(&g);
+    g.cpu.r[15] |= FLAG_N; /* N set in CPSR, mode SVC from reset */
+    uint32_t prog[] = { 0xE28F0000u, 0xE1A0100Fu }; /* ADD r0,pc,#0 ; MOV r1,pc */
+    rig_load(&g, prog, 2, 0);
+    arm26_run(&g.cpu, 1);
+    check("rn15-psr-zero", g.cpu.r[0] == 8, "Rn=r15 reads PC+8 with PSR zeroed");
+    arm26_run(&g.cpu, 1);
+    snprintf(det, sizeof det, "r1=%08" PRIx32, g.cpu.r[1]);
+    check("rm15-keeps-psr", g.cpu.r[1] == (0x80000000u | 0x0C000000u | 0x0Cu | MODE_SVC),
+          "Rm=r15 keeps flags|PC+8|mode");
+}
+
+/* 44. LDR with Rd==Rn and writeback: the loaded value wins (ARM2 silicon) */
+static void t_ldr_rd_rn_load_wins(void)
+{
+    Rig g; rig_init(&g);
+    uint32_t prog[] = { 0xE3A00040u, 0xE4900000u }; /* MOV r0,#0x40 ; LDR r0,[r0],#0 */
+    rig_load(&g, prog, 2, 0);
+    arm26_wr32(&g.cpu, 0x40, 0x12345678u);
+    arm26_run(&g.cpu, 2);
+    snprintf(det, sizeof det, "r0=%08" PRIx32, g.cpu.r[0]);
+    check("ldr-rd-rn-post-load-wins", g.cpu.r[0] == 0x12345678u,
+          "post-indexed LDR Rd==Rn: loaded value wins over base writeback");
+
+    Rig h; rig_init(&h);
+    uint32_t prog2[] = { 0xE3A00040u, 0xE5B00004u }; /* MOV r0,#0x40 ; LDR r0,[r0,#4]! */
+    rig_load(&h, prog2, 2, 0);
+    arm26_wr32(&h.cpu, 0x44, 0xCAFEBABEu);
+    arm26_run(&h.cpu, 2);
+    snprintf(det, sizeof det, "r0=%08" PRIx32, h.cpu.r[0]);
+    check("ldr-rd-rn-prewb-load-wins", h.cpu.r[0] == 0xCAFEBABEu,
+          "pre-indexed writeback LDR Rd==Rn: loaded value wins");
+}
+
+/* 45. SWI 0 takes the SWI vector when swi0_halt is cleared (machine/ROM mode) */
+static void t_swi0_vectors_when_not_halting(void)
+{
+    Rig g; rig_init(&g);
+    g.cpu.swi0_halt = 0;
+    uint32_t prog[] = { 0xEF000000u, 0xE3A00001u }; /* SWI 0 ; MOV r0,#1 */
+    rig_load(&g, prog, 2, 0);
+    uint32_t vec[] = { 0xEA00000Cu };               /* 0x08: B 0x40 */
+    rig_load(&g, vec, 1, 0x08);
+    uint32_t handler[] = { 0xE3A00002u };           /* 0x40: MOV r0,#2 */
+    rig_load(&g, handler, 1, 0x40);
+    arm26_run(&g.cpu, 3);
+    snprintf(det, sizeof det, "halted=%d r0=%" PRIx32 " mode=%u",
+             g.cpu.halted, g.cpu.r[0], g.cpu.r[15] & 3);
+    check("swi0-vectors", !g.cpu.halted && g.cpu.r[0] == 2 && (g.cpu.r[15] & 3) == MODE_SVC,
+          "SWI 0 vectors to 0x08 in SVC mode when swi0_halt=0");
+}
+
 int main(void)
 {
     t_mov_imm();
@@ -419,5 +474,8 @@ int main(void)
     t_teqp_mode_switch();
     t_sum_loop();
     t_swi0_halts();
+    t_rn15_psr_zero();
+    t_ldr_rd_rn_load_wins();
+    t_swi0_vectors_when_not_halting();
     return test_summary("arm26") ? 1 : 0;
 }

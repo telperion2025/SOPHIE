@@ -90,6 +90,7 @@ void arm26_reset(Arm26 *cpu)
     cpu->fiqPending = 0;
     cpu->cycles = 0;
     cpu->halted = 0;
+    cpu->swi0_halt = 1;
 }
 
 /* ---------- register banking ---------- */
@@ -338,8 +339,10 @@ static void branch(Arm26 *cpu, uint32_t a, uint32_t ins)
 static void swi(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     (void)a;
-    /* Test-exit convention: SWI 0 halts the run loop (no exception). */
-    if ((ins & 0x00FFFFFFu) == 0) { cpu->halted = 1; return; }
+    /* Test-exit convention: SWI 0 halts the run loop (no exception) only
+     * when swi0_halt is set; otherwise it vectors like any other SWI
+     * (RISC OS defines SWI 0 as OS_WriteC). */
+    if ((ins & 0x00FFFFFFu) == 0 && cpu->swi0_halt) { cpu->halted = 1; return; }
     exception(cpu, VEC_SWI, MODE_SVC, 0);
 }
 
@@ -381,7 +384,13 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
     int S = (ins >> 20) & 1;
     int rn = (ins >> 16) & 0xF;
     int rd = (ins >> 12) & 0xF;
-    uint32_t op1 = get_reg(cpu, rn, a, 0);
+    /* 26-bit rule (Acorn ARM data manual): when R15 is the FIRST operand
+     * (Rn) of a data-processing instruction, only the 24 PC bits are
+     * presented - all PSR bits (flags 31:26 and mode 1:0) are supplied as
+     * zero. So "teq pc,#imm" XORs the immediate into a PSR-zero PC+8, which
+     * sets the mode from the immediate's bits 1:0 (TEQP pc,#0xc000003 returns
+     * to SVC) instead of XORing the current mode. Rm=R15 keeps the PSR. */
+    uint32_t op1 = (rn == 15) ? ((a + 8) & PC_MASK) : get_reg(cpu, rn, a, 0);
     shift_result sh = shift(cpu, ins, a);
     uint32_t op2 = sh.v;
     uint32_t result = 0;
@@ -503,15 +512,19 @@ static void single_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
             uint32_t r = (addr & 3) * 8;
             v = r ? ((word >> r) | (word << (32 - r))) : word; /* unaligned load rotates so byte@addr is LSB */
         }
+        /* ARM2: on a load with writeback, the base writeback happens before
+         * the load data is written to Rd, so when Rd==Rn (e.g. the linked-
+         * list walk "ldr fp,[fp],#0" in the RISC OS ROM) the loaded value
+         * wins over the updated base. */
+        if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0); /* writeback (post) or P with W */
         if (rd == 15) cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK); /* LDR pc: jump, flags preserved */
         else set_reg(cpu, rd, v, 0);
     } else {
         uint32_t v = get_reg(cpu, rd, a, 0);
         if (B) arm26_wr8(cpu, addr, (uint8_t)(v & 0xFF));
         else   arm26_wr32(cpu, addr, v);
+        if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0); /* writeback (post) or P with W */
     }
-
-    if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0); /* writeback (post) or P with W */
 }
 
 static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
