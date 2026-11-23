@@ -249,6 +249,18 @@ int main(void)
     snprintf(det, sizeof det, "vsync-irqs=%" PRIu32 " total %" PRIu32 "->%" PRIu32, vsc, irq0, irq1);
     check("vsync-irqs-delivered", vsc > 0 && irq1 > irq0, det);
 
+    /* forced vsync: raise the flyback line directly, no frame wait - IRQA
+     * bit 3 must be set immediately and the handler must tally it */
+    uint32_t vsc0 = mem_rd32(&m.bus, 0x2008);
+    ioc_flyback(&m.ioc);
+    uint8_t sta = mem_rd8(&m.bus, 0x03200000u + IOC_IRQ_STATUS_A);
+    snprintf(det, sizeof det, "IRQA=%" PRIx32, sta);
+    check("vsync-flyback-bit-set", (sta & IOC_IRA_FLYBACK) != 0, det);
+    machine_run(&m, 10000);
+    uint32_t vsc1 = mem_rd32(&m.bus, 0x2008);
+    snprintf(det, sizeof det, "vsync-irqs=%" PRIu32 "->%" PRIu32, vsc0, vsc1);
+    check("vsync-irq-forced-delivered", vsc1 > vsc0, det);
+
     /* keyboard: queue a byte, IRQ B Rx-full set and delivered to the handler
      * ([0x200C]); reading KART returns the byte and clears Rx-full */
     ioc_key_press(&m.ioc, 'A');
