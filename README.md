@@ -76,14 +76,21 @@ PRMs); GPL'd reference emulators (RPCEmu, RPCEmu Extended) and the closed
 Arculator are **studied as behaviour reference and credited only** — no code
 or pseudocode is derived from them (spec section 5).
 
-Two acquisition boundaries are kept explicit, per the spec:
+ROM-image policy (development vs. distribution), per the spec:
 
-- **RISC OS ROM images** are *not* distributed here; they are a separate
-  acquisition problem from the emulator code (ROOL publishes sources under
-  Apache-2.0; ROM images you load into the emulator are obtained separately).
-- **Wi-Fi firmware blobs** (Broadcom/Cypress family) are loaded at runtime as
-  data under their own redistributable terms, never linked or mixed into the
-  licensed code.
+- **During development**, the development branch carries a `ROMS/` folder
+  with the images used for the WP4/M2.5 boot work: `ROMS/ROM200` and
+  `ROMS/ROM300` (Acorn RISC OS 2.00/3.00 images) and `ROMS/BCM2835.5.30/`
+  (ROOL's RISC OS 5.30 Raspberry Pi image, including Broadcom boot firmware
+  under its own `LICENCE.broadcom`). The WP4+ loader instead reads ROM images
+  from a local, gitignored `roms/` directory.
+- **For any distribution or public release**, the Acorn ROM images must be
+  removed first: their redistribution rights are unconfirmed, so they are
+  *not* licensed under the Apache-2.0 grant and must not ship with the code
+  (see `NOTICE`). Release artifacts contain code only; users supply their own
+  ROM images into `roms/` at runtime. The same applies to **Wi-Fi firmware
+  blobs** (Broadcom/Cypress family): loaded at runtime as data under their own
+  terms, never linked into or distributed with the licensed code.
 
 ## References
 

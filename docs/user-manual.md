@@ -108,9 +108,11 @@ ioc_key_press(&m.ioc, 'A');                   /* inject a keypress (KART) */
 ```
 
 Memory map and device register details are in the
-[reference manual](reference-manual.md). ROM images are **not** distributed
-with this repository (spec section 5): acquire a RISC OS 2/3 ROM image
-separately for WP4.
+[reference manual](reference-manual.md). ROM images are runtime data, not
+repo content at release (spec section 5; see README/NOTICE for the
+development-vs-distribution policy): the WP4+ loader reads them from a local
+`roms/` directory (gitignored), e.g. `roms/ROM300` for RISC OS 3.00 or
+`roms/riscos5-5.30-pi.img` for RISC OS 5.30.
 
 ## 7. Repository layout
 

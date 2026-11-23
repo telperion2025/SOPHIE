@@ -5,3 +5,6 @@ emu/tests/arm26_test
 emu/tests/mmio_test
 emu/tests/machine_test
 emu/tests/bench
+
+# local ROM image working copies (runtime data; never commit — see README/NOTICE)
+roms/
