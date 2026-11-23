@@ -17,7 +17,7 @@ HOST_SRC = host/host.c host/host_headless.c host/keymap.c
 LIB_SRC  = $(CORE_SRC) $(MACH_SRC) $(HOST_SRC)
 LIB_OBJ  = $(LIB_SRC:.c=.o)
 
-TESTS = tests/arm26_test tests/arm26_ext_test tests/mmio_test tests/machine_test tests/host_test tests/fdc_test
+TESTS = tests/arm26_test tests/arm26_ext_test tests/mmio_test tests/machine_test tests/host_test tests/fdc_test tests/edge_test
 
 .PHONY: all test bench clean host-x11
 
@@ -41,6 +41,9 @@ tests/host_test: tests/host_test.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
 tests/fdc_test: tests/fdc_test.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^
+
+tests/edge_test: tests/edge_test.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
 tests/bench: tests/bench.o $(LIB_OBJ)
@@ -78,6 +81,7 @@ test: $(TESTS)
 	./tests/machine_test
 	./tests/host_test
 	./tests/fdc_test
+	./tests/edge_test
 
 bench: tests/bench
 	./tests/bench 1000000

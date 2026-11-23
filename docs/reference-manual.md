@@ -47,11 +47,14 @@ bug-compatible with that reference (see §7 known limitations).
 
 ### 2.2 Exceptions
 
-26-bit exception entry (`exception()`): banked `r14_mode := old CPSR`;
+26-bit exception entry (`exception()`): banked `r14_mode := old CPSR` with
+the PC field offset (`+0` for SWI/UNDEF = faulting+4, `+4` for IRQ/FIQ/DABT
+= next/faulting+8, so `SUBS PC,lr,#4` / `#8` return correctly);
 `CPSR := (NZCV preserved) | I set | (F set for FIQ) | vector | new mode`.
 Vectors: RESET 0x00, UNDEF 0x04, SWI 0x08, PABT 0x0C, DABT 0x10, IRQ 0x18,
 FIQ 0x1C. DABT is raised by the memory bus (§3) when a USR-mode data access
-lands in the abort window; `lr_svc` holds the faulting pc+4. IRQ/FIQ lines
+lands in the abort window; `lr_svc` holds the faulting pc+8 (return with
+`SUBS PC,lr,#8` retries the faulting instruction). IRQ/FIQ lines
 (`irqPending`/`fiqPending`) are sampled between instructions and taken only
 when the corresponding mask bit is clear.
 **Test-exit convention:** while `swi0_halt` is set (the default after
@@ -137,7 +140,7 @@ open bus, write is dropped) and latches `bus.dabt`/`dabt_addr`/`dabt_count`.
 Instruction fetches (`bus.fetch` set by the core around the opcode read) are
 exempt, and the core drives `user_mode` only around its own accesses, so
 host/device bus users never abort. After the faulting instruction the core
-takes a DABT exception (vector 0x10, SVC mode, `lr_svc` = faulting pc+4).
+takes a DABT exception (vector 0x10, SVC mode, `lr_svc` = faulting pc+8).
 The base machine enables the window for the unclaimed podule/expansion space
 0x03000000-0x031FFFFF only: POST's own mode test performs USR-mode access to
 claimed devices (VIDC/ROM window), so a blanket supervisor-only I/O abort is
@@ -352,6 +355,15 @@ downward carry-fold checksums), empty "Hugo" root directory "$" in sectors
   26-bit r15 operand rules (Rn zeroes the PSR, Rm keeps it), LDR Rd==Rn
   load-wins writeback ordering, and SWI 0 vectoring when `swi0_halt` is
   cleared (50 checks total).
+- `edge_test.c` — wide edge-case battery from the review pass (28 checks):
+  MULS preserving V, Rs=15 PSR-zero register shifts, register-shift edge
+  amounts (LSL 0 / ROR 32 / LSR#0 / RRX), STM base-in-list position rule,
+  LDRH Rd==Rn load-wins, TST-with-S=0 and coprocessor UNDEF traps, NV
+  condition, BL lr, STR pc CPSR store, LDM pc flag/CPSR behaviour, IRQ
+  lr=pc+8, plus machine edges: unmapped-logical open bus, CAM alias
+  unmapping, ROM window mirror + latch drop, open bus beyond installed
+  DRAM, USR fetch exemption vs SVC podule reads, IOC timer mask/line,
+  VIDC flyback only with a valid CRTC mode.
 - `arm26_ext_test.c` — WP6 extension tests (15 checks): group-011
   register-offset LDR/STR incl. negative offset + writeback, LDRH/STRH
   immediate and register forms with writeback, LDRSB/LDRSH sign extension,
@@ -414,10 +426,13 @@ Remaining known limitations:
   the LDR Rd==Rn load-wins writeback order in the core, plus `swi0_halt`
   cleared for the machine (SWI 0 = OS_WriteC), the ROM300 POST completes,
   the kernel installs its SWI/IRQ vectors in RAM and dispatches SWIs from
-  kernel code in DRAM, and boot settles into a stable SVC-mode polling loop
-  (0x0381c9xx/0x0381d2xx region) that repeats unchanged for 5e9 cycles with
-  zero data aborts and zero reboots (`tools/romboot roms/ROM300 5000000000`);
-  ROM200 likewise runs 3e9 cycles stably, ending in USR mode. CMOS/RTC
+  kernel code in DRAM, handles VIDC vsync IRQs (vector 0x18, `lr_irq`=
+  next+4), and reaches the kernel idle polling loop (SVC 0x0381d1xx region,
+  then the USR-mode CLI loop at 0x01f033xx) at ~66M cycles with zero data
+  aborts and zero reboots (`tools/romboot roms/ROM300 70000000`);
+  ROM200 likewise runs stably in USR mode. Past ~74M cycles a further M3
+  issue appears: the USR-mode loop eventually marches through unmapped
+  logical pages (open-bus NV nops) instead of idling - tracked under M3. CMOS/RTC
   (PCF8583) is modelled (§4.4a) and RISC OS 3.00 POST passes its
   configuration stage. The physical DRAM window decodes only the installed
   RAM (open bus beyond), which removed the POST reboot crash; the MEMC
@@ -430,6 +445,14 @@ Remaining known limitations:
 - `SWI 0` halt convention, gated by `swi0_halt`: set by `arm26_reset` so
   the test harnesses can exit, cleared by `machine_init` so a booting ROM
   gets a real SWI exception (RISC OS SWI 0 = OS_WriteC).
+- Further ARM2 corner rules pinned by `edge_test`: MULS/MLAS update N and Z
+  only (V preserved, C meaningless); Rs=r15 in a register shift reads PC+8
+  with PSR zeroed (same Rn/Rs rule as data processing); STM with writeback
+  stores the base unchanged when it is first in the list but the modified
+  (final) value when stored second or later (Acorn PRM App. B); TST/TEQ/
+  CMP/CMN with S=0 and all coprocessor-space encodings trap as UNDEF on
+  ARMv2; exception `lr` offsets: SWI/UNDEF = faulting+4, IRQ/FIQ/DABT =
+  next/faulting+8.
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
   unmasked, so the final word of RAM (addr = ramSize−4) reads back with
@@ -471,7 +494,8 @@ Remaining known limitations:
 | `arm26_test`: rn15-psr-zero, rm15-keeps-psr, ldr-rd-rn-*-load-wins, swi0-vectors | 26-bit r15 operand rules (Rn zeroes PSR, Rm keeps it), LDR Rd==Rn load-wins writeback order, SWI 0 vectoring when `swi0_halt`=0 (§2.1, §2.2; Acorn PRM App. B, RISC OS PRM) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
-| `machine_test` (24 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a), plus MEMC data-abort: USR-mode podule access aborts to vector 0x10 with `lr_svc`=faulting pc+4 while SVC/claimed-device/fetch accesses stay abort-free (§3) |
+| `machine_test` (24 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a), plus MEMC data-abort: USR-mode podule access aborts to vector 0x10 with `lr_svc`=faulting pc+8 while SVC/claimed-device/fetch accesses stay abort-free (§3) |
+| `edge_test` (28 checks) | review-pass edge battery: ARM2 corner semantics (shifter carry edges, Rs/Rn=15 rules, STM base position, LDRH Rd==Rn, UNDEF traps, exception lr offsets) and machine/bus edges (CAM aliasing, ROM mirror, open bus, DABT fetch exemption, IOC mask, VIDC mode gate) (§2, §3, §4, §7) |
 | `fdc_test` (33 checks) | WP7 acceptance: WD1772 register map/status/command model, DRQ/INTRQ→IOC FIQ FH0/FH1, latches A/B, type I + read/write sector + read address + force interrupt + master reset against disc images, plus guest-code end-to-end sector read (§10 WP7; WD1772 datasheet) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 

@@ -458,7 +458,7 @@ int main(void)
     check("vidc-render-pixel-blue", p1 == 0x0000FFu, det);
 
     /* MEMC data abort: USR-mode data access to unclaimed I/O (podule space)
-     * aborts to vector 0x10 with lr_svc = faulting pc+4; claimed devices
+     * aborts to vector 0x10 with lr_svc = faulting pc+8 (SUBS PC,lr,#8 retries); claimed devices
      * (IOC) and instruction fetches stay accessible in USR mode */
     {
         static uint8_t ram2[0x400000];
@@ -480,7 +480,7 @@ int main(void)
         uint32_t m8 = mem_rd32(&m2.bus, 0x02003008u);
         uint32_t lrsvc = mem_rd32(&m2.bus, 0x0200300Cu);
         uint32_t fault_pc = ROM_BASE_ADDR + (uint32_t)fault_word * 4;
-        uint32_t lr_expect = 0x0C000000u | ((fault_pc + 4) & PC_MASK) | MODE_USR;
+        uint32_t lr_expect = 0x0C000000u | ((fault_pc + 8) & PC_MASK) | MODE_USR;
         snprintf(det, sizeof det, "marker8=%02x lr_svc=%08x expect=%08x dabts=%" PRIu64 " dabt_addr=%08x mode=%u",
                  m8, lrsvc, lr_expect, m2.bus.dabt_count, m2.bus.dabt_addr, m2.cpu.r[15] & 3);
         check("dabt-usr-podule-aborts-to-vector",

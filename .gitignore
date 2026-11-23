@@ -12,6 +12,7 @@ emu/tools/sophie-x11
 emu/tools/mkadfs
 emu/tests/host_test
 emu/tests/fdc_test
+emu/tests/edge_test
 
 # local ROM image working copies (runtime data; never commit — see README/NOTICE)
 roms/

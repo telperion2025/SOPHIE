@@ -78,7 +78,7 @@ uint32_t arm26_pc_operand(const Arm26 *cpu, uint32_t a);
 
 /* memory access through the bus; a USR-mode data access to the machine's
  * supervisor-only I/O window (bus.io_base..) raises a data abort (VEC_DABT,
- * LR_svc = faulting pc+4, SVC mode) after the instruction instead of
+ * LR_svc = faulting pc+8, SVC mode) after the instruction instead of
  * reaching the device; instruction fetches are exempt */
 uint8_t  arm26_rd8(Arm26 *cpu, uint32_t addr);
 void     arm26_wr8(Arm26 *cpu, uint32_t addr, uint8_t v);
