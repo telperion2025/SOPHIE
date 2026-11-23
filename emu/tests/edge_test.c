@@ -405,6 +405,52 @@ static void t_vidc_flyback_modes(void)
     check("vidc-flyback-only-with-valid-mode", !fb0 && fb1, det);
 }
 
+/* LDM^ with pc switching mode: the W writeback must land in the OLD mode's
+ * base register before the pc load re-banks r8-r14 (ROM300 boot derail). */
+static void t_ldm_pc_caret_writeback_old_bank(void)
+{
+    Rig g; rig_init(&g); /* SVC mode after reset */
+    uint32_t prog[] = { 0xE8FD8007u }; /* LDMIA sp!, {r0,r1,r2,pc}^ */
+    rig_load(&g, prog, 1, 0);
+    g.cpu.r[13] = 0x1000;          /* SVC sp (live) */
+    g.cpu.bankUsr[5] = 0x5000;     /* USR sp waiting in the bank */
+    arm26_wr32(&g.cpu, 0x1000, 0x111u);
+    arm26_wr32(&g.cpu, 0x1004, 0x222u);
+    arm26_wr32(&g.cpu, 0x1008, 0x333u);
+    arm26_wr32(&g.cpu, 0x100c, 0x2000u | MODE_USR);
+    arm26_run(&g.cpu, 1);
+    snprintf(det, sizeof det, "mode=%u sp=%08" PRIx32 " svc_sp=%08" PRIx32 " pc=%08" PRIx32,
+             g.cpu.r[15] & 3, g.cpu.r[13], g.cpu.bankSvc[0], g.cpu.r[15] & PC_MASK);
+    check("ldm-pc-caret-writeback-old-bank",
+          (g.cpu.r[15] & 3) == MODE_USR && g.cpu.r[13] == 0x5000 &&
+          g.cpu.bankSvc[0] == 0x1010 && (g.cpu.r[15] & PC_MASK) == 0x2000, det);
+}
+
+/* SUBS PC,lr,#4 (IRQ return): the mode bits in the result must re-bank
+ * r8-r14, so SVC sp/lr come back (ROM300 boot derail). */
+static void t_subs_pc_rebanks(void)
+{
+    Rig g; rig_init(&g); /* SVC */
+    uint32_t prog[] = { 0xE1A00000u, 0xE25EF004u }; /* NOP ; SUBS pc,lr,#4 */
+    rig_load(&g, prog, 2, 0);
+    g.cpu.r[13] = 0x8000;           /* SVC sp */
+    g.cpu.r[14] = 0x1234;           /* SVC lr */
+    g.cpu.r[15] &= ~FLAG_I;
+    g.cpu.irqPending = 1;
+    arm26_run(&g.cpu, 1);           /* NOP, then IRQ exception -> IRQ mode */
+    snprintf(det, sizeof det, "pre mode=%u", g.cpu.r[15] & 3);
+    check("subs-pc-rebank-enter-irq", (g.cpu.r[15] & 3) == MODE_IRQ, det);
+    g.cpu.r[13] = 0x9999;           /* IRQ sp (banked, live) */
+    g.cpu.r[14] = 0x100u | MODE_SVC; /* return to SVC at 0x100, I clear */
+    rig_setpc(&g, 4);
+    arm26_run(&g.cpu, 1);           /* SUBS pc,lr,#4 */
+    snprintf(det, sizeof det, "mode=%u sp=%08" PRIx32 " lr=%08" PRIx32 " pc=%08" PRIx32,
+             g.cpu.r[15] & 3, g.cpu.r[13], g.cpu.r[14], g.cpu.r[15] & PC_MASK);
+    check("subs-pc-rebank",
+          (g.cpu.r[15] & 3) == MODE_SVC && g.cpu.r[13] == 0x8000 &&
+          g.cpu.r[14] == 0x1234 && (g.cpu.r[15] & PC_MASK) == 0xFC, det);
+}
+
 int main(void)
 {
     t_muls_v_preserved();
@@ -429,5 +475,7 @@ int main(void)
     t_svc_podule_read_no_abort();
     t_ioc_timer_mask();
     t_vidc_flyback_modes();
+    t_ldm_pc_caret_writeback_old_bank();
+    t_subs_pc_rebanks();
     return test_summary("edge") ? 1 : 0;
 }

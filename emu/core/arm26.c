@@ -164,23 +164,13 @@ static uint32_t base_reg(Arm26 *cpu, int rn, uint32_t a)
     return cpu->r[rn];
 }
 
-/* MOVS-style r15 write from a logical ALU result: full CPSR replace (if priv) */
-static void write_pc_logical(Arm26 *cpu, uint32_t v)
-{
-    if (arm26_mode(cpu) != MODE_USR) {
-        cpu->r[15] = (v & (FLAG_NZCV | FLAG_I | FLAG_F)) | (v & PC_MASK) | (v & 3);
-    } else {
-        /* unprivileged: NZCV change; I,F,mode protected */
-        cpu->r[15] = (v & FLAG_NZCV) | (cpu->r[15] & (FLAG_I | FLAG_F)) | (v & PC_MASK) | MODE_USR;
-    }
-}
-
-/* MOVS-style r15 write from an arithmetic ALU or LDM-with-S load:
- * kind 'arith'   : NZCV from computed flags, IF+mode kept
- * kind 'restore' : full CPSR from value (if priv) */
+/* r15 write from an arithmetic ALU result or an LDM-with-S load.
+ * Privileged + restore: full CPSR from the value, re-banking on mode change
+ * (this is the 26-bit exception-return path: SUBS PC,lr,#4 / LDM^ ...,pc). */
 static void write_pc_restore(Arm26 *cpu, uint32_t v, int restore)
 {
     if (restore && arm26_mode(cpu) != MODE_USR) {
+        set_mode(cpu, v & 3);
         cpu->r[15] = (v & (FLAG_NZCV | FLAG_I | FLAG_F)) | (v & PC_MASK) | (v & 3);
         return;
     }
@@ -460,25 +450,18 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
     }
 
     if (rd == 15 && S) {
-        /* r15 as ALU destination with S: 26-bit CPSR semantics.
-         * TSTP/TEQP/CMPP/CMNP (rd=15 on the compare ops): CPSR <- ALU
-         * result, PC is NOT affected (unlike MOVS pc,.. / ADDS pc,..). */
-        if (isCompare) {
-            if (arm26_mode(cpu) != MODE_USR) {
-                uint32_t pc = cpu->r[15] & PC_MASK;
-                set_mode(cpu, result & 3);
-                cpu->r[15] = (result & (FLAG_NZCV | FLAG_I | FLAG_F | 3)) | pc;
-            } else {
-                /* unprivileged: NZCV change only */
-                cpu->r[15] = (result & FLAG_NZCV) | (cpu->r[15] & (FLAG_I | FLAG_F | 3 | PC_MASK));
-            }
-        } else if (isArith) {
-            /* ADDS/SUBS pc,...: NZCV already updated from result above;
-             * PC <- result, I/F/mode preserved. (Exception returns go via
-             * LDM^/MOVS pc,lr, which restore the full CPSR.) */
-            cpu->r[15] = (cpu->r[15] & (FLAG_NZCV | FLAG_I | FLAG_F | 3)) | (result & PC_MASK);
+        /* r15 as ALU destination with S: 26-bit CPSR semantics. In a
+         * privileged mode the whole CPSR is replaced by the result (mode
+         * included, re-banking r8-r14) - this is how SUBS PC,lr,#4 and
+         * MOVS PC,lr perform exception returns. TSTP/TEQP/CMPP/CMNP keep
+         * the PC (their P-form immediates only touch PSR bits). */
+        if (arm26_mode(cpu) != MODE_USR) {
+            uint32_t pc = isCompare ? (cpu->r[15] & PC_MASK) : (result & PC_MASK);
+            set_mode(cpu, result & 3);
+            cpu->r[15] = (result & (FLAG_NZCV | FLAG_I | FLAG_F | 3)) | pc;
         } else {
-            write_pc_logical(cpu, result);
+            /* unprivileged: NZCV change only */
+            cpu->r[15] = (result & FLAG_NZCV) | (cpu->r[15] & (FLAG_I | FLAG_F | 3 | PC_MASK));
         }
         return;
     }
@@ -558,11 +541,15 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     int lowest = -1;
     for (int i = 0; i < 16; i++) if (list & (1u << i)) { lowest = i; break; }
 
+    int wroteBack = 0;
     for (int i = 0; i < 16; i++) {
         if ((list & (1u << i)) == 0) continue;
         if (L) {
             uint32_t v = arm26_rd32(cpu, addr);
             if (i == 15) {
+                /* the writeback belongs to the mode the transfer started in:
+                 * apply it before the pc load can re-bank r8-r14 */
+                if (W && rn != 15) { set_reg(cpu, rn, finalBase, 0); wroteBack = 1; }
                 if (S && priv) write_pc_restore(cpu, v, 1); /* LDM ^ with PC: full CPSR restore */
                 else cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK);
             } else {
@@ -580,7 +567,7 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
         }
         addr = addr + 4;
     }
-    if (W) set_reg(cpu, rn, finalBase, 0);
+    if (W && !wroteBack) set_reg(cpu, rn, finalBase, 0);
 }
 
 /* ARMv4 halfword/signed transfers: cond 000 P U I W L rn rd immHi 1 S H 1 immLo/rm */
