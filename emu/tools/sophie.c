@@ -3,9 +3,11 @@
  * and present VIDC frames through the host window layer, pumping host
  * keyboard input into the IOC KART.
  *
- * Usage: tools/sophie <rom-image> [max-frames] [--ppm out.ppm]
+ * Usage: tools/sophie <rom-image> [max-frames] [--ppm out.ppm] [--disc N=path.adf] [--ro]
  *   default max-frames: run until the window is closed / CPU halts
  *   --ppm: headless backend writes each presented frame as a PPM snapshot
+ *   --disc N=path: attach a disc image to floppy drive N (0-3), WP7
+ *   --ro: attach disc images write-protected
  *   (build with `make host-x11` for a real X11 window when DISPLAY is set)
  *
  * Not part of `make test` (needs a ROM image, which is local runtime data).
@@ -32,9 +34,20 @@ int main(int argc, char **argv)
     const char *rompath = argc > 1 ? argv[1] : "roms/ROM300";
     long max_frames = -1;
     const char *ppm = NULL;
+    const char *disc_arg[4] = { NULL, NULL, NULL, NULL };
+    int ro = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--ppm") == 0 && i + 1 < argc)
             ppm = argv[++i];
+        else if (strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
+            const char *spec = argv[++i];
+            int drv = spec[0] - '0';
+            if (drv >= 0 && drv < 4 && spec[1] == '=')
+                disc_arg[drv] = spec + 2;
+            else
+                fprintf(stderr, "sophie: bad --disc spec '%s' (want N=path)\n", spec);
+        } else if (strcmp(argv[i], "--ro") == 0)
+            ro = 1;
         else
             max_frames = strtol(argv[i], NULL, 0);
     }
@@ -49,6 +62,16 @@ int main(int argc, char **argv)
 
     Machine m;
     machine_init(&m, ram, sizeof ram, rom, (uint32_t)rom_size);
+
+    for (int d = 0; d < 4; d++) {
+        if (disc_arg[d] != NULL) {
+            if (machine_disc_attach(&m, d, disc_arg[d], ro) != 0) {
+                fprintf(stderr, "cannot attach disc %d: %s\n", d, disc_arg[d]);
+                return 2;
+            }
+            printf("sophie: disc %d = %s (%s)\n", d, disc_arg[d], ro ? "ro" : "rw");
+        }
+    }
 
     HostWindow *win = host_open("SOPHIE", FB_W, FB_H);
     if (win == NULL) {

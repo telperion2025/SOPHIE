@@ -57,7 +57,7 @@ Build products land next to their sources (`emu/core/*.o`, `emu/mach/*.o`,
 make test
 ```
 
-This runs five suites:
+This runs six suites:
 
 | Suite | Binary | What it proves |
 | --- | --- | --- |
@@ -66,6 +66,7 @@ This runs five suites:
 | `mmio` | `emu/tests/mmio_test` | WP2: the device registry routes rd8/wr8/rd32/wr32, the CPU reaches MMIO devices through the bus, unmapped accesses are safe open-bus, region priority, and the flat-RAM path is unaffected. |
 | `machine` | `emu/tests/machine_test` | WP3/WP4: a hand-built dummy ROM boots the Archimedes base machine through the MEMC CAM walk, reads/writes emulated memory, receives IOC timer, VIDC-flyback (vsync) and KART keyboard IRQs, and an IRQ-driven loop runs **1,000,000 cycles without lockup**; plus ROM-window mirroring, VIDC framebuffer rendering and the keyboard path. |
 | `host` | `emu/tests/host_test` | WP5 host window layer (**11 assertions**): headless present/poll/quit cycle, PPM snapshot contents, host→RISC OS keymap, and `host_pump_input()` injecting KART make/break bytes into the machine. |
+| `fdc` | `emu/tests/fdc_test` | WP7 (**33 assertions**): WD1772 floppy controller model — register map at 0x03310000, type I/seek/read/write sector/read address/force-interrupt commands, DRQ/INTRQ wired to IOC FIQ FH0/FH1, drive latches at 0x03250040/0x03250018 — verified against real disc images, including an end-to-end guest program that reads a 1024-byte sector through the memory bus. |
 
 Each suite prints `name: N passed, M failed` and exits non-zero on any
 failure; `make test` stops at the first failing suite.
@@ -135,6 +136,21 @@ through the host window layer and pumps host keyboard input into the IOC
 KART. The default build is headless (PPM snapshots via `--ppm`, scripted
 input in tests); `make host-x11` adds a real X11 window backend (libX11 is
 dlopen'd at runtime, so the default build has no X11 dependency).
+
+Disc images (WP7 — not part of `make test`). Create a blank, formatted ADFS
+floppy image (ADFS L, 640K, old map) and attach it to floppy drive 0:
+
+```sh
+emu/tools/mkadfs /tmp/blank.adl MyDisc      # blank ADFS L image, name "MyDisc"
+emu/tools/sophie roms/ROM300 100 --ppm /tmp/frame.ppm --disc 0=/tmp/blank.adl
+emu/tools/romboot roms/ROM300 5000000 --disc 0=/tmp/blank.adl   # smoke run
+```
+
+`--disc N=path` attaches a raw sector image to drive N (0-3); `--ro` attaches
+it write-protected. Supported image sizes are the ADFS S/M/L/D/E/F/G and DOS
+360K/400K/720K geometries (see the reference manual §4.6); the WD1772 is
+modelled at 0x03310000 with DRQ/INTRQ on IOC FIQ bits FH0/FH1, so guest code
+driving the controller sees a real filing-system device.
 
 ## 7. Repository layout
 

@@ -91,6 +91,7 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     memc_init(&m->memc, m);
     vidc_init(&m->vidc, m);
     ioc_init(&m->ioc, m);
+    fdc_init(&m->fdc, m);
 
     region_init(&m->r_logical, MACH_LOGICAL_BASE, MACH_LOGICAL_SIZE, &m->memc,
                 memc_logical_rd8, memc_logical_wr8, memc_logical_rd32, memc_logical_wr32);
@@ -124,6 +125,20 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     mem_region_add(&m->bus, &m->r_rom);
 }
 
+int machine_disc_attach(Machine *m, int drive, const char *path, int wprot)
+{
+    if (drive < 0 || drive >= DISC_MAX_DRIVES)
+        return -1;
+    return disc_load(&m->disc[drive], path, wprot);
+}
+
+void machine_disc_detach(Machine *m, int drive)
+{
+    if (drive < 0 || drive >= DISC_MAX_DRIVES)
+        return;
+    disc_unload(&m->disc[drive]);
+}
+
 void machine_run(Machine *m, uint64_t n)
 {
     while (n > 0 && !m->cpu.halted) {
@@ -134,6 +149,7 @@ void machine_run(Machine *m, uint64_t n)
         if (did > 0) {
             ioc_tick(&m->ioc, &m->cpu, (uint32_t)did);
             vidc_tick(&m->vidc, (uint32_t)did);
+            fdc_tick(&m->fdc, (uint32_t)did);
         }
         n -= did;
         if (did == 0)

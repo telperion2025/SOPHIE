@@ -4,6 +4,7 @@
  */
 #include "ioc.h"
 #include "arm26.h"
+#include "fdc.h"
 #include "machine.h"
 
 #include <string.h>
@@ -49,6 +50,16 @@ void ioc_tick(Ioc *ioc, Arm26 *cpu, uint32_t cycles_delta)
 void ioc_flyback(Ioc *ioc)
 {
     ioc->regs[IOC_IRQ_STATUS_A] |= IOC_IRA_FLYBACK;
+    if (ioc->mach != NULL)
+        ioc_update_lines(ioc, &ioc->mach->cpu);
+}
+
+void ioc_fiq_line(Ioc *ioc, uint8_t mask, int state)
+{
+    if (state)
+        ioc->regs[IOC_FIQ_STATUS] |= mask;
+    else
+        ioc->regs[IOC_FIQ_STATUS] &= (uint8_t)~mask;
     if (ioc->mach != NULL)
         ioc_update_lines(ioc, &ioc->mach->cpu);
 }
@@ -111,6 +122,9 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
       case IOC_IRQ_REQUEST_B:
         ioc->regs[IOC_IRQ_STATUS_B] &= (uint8_t)~v; /* write-1-clear */
         break;
+      case IOC_FIQ_REQUEST:
+        ioc->regs[IOC_FIQ_STATUS] &= (uint8_t)~v; /* write-1-clear */
+        break;
       case IOC_IRQ_MASK_A:
       case IOC_IRQ_MASK_B:
       case IOC_FIQ_MASK:
@@ -137,12 +151,41 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
         ioc_update_lines(ioc, cpu);
 }
 
+/* 1MHz peripheral bus: peripheral 5 (0x03250000) hosts the floppy latches;
+ * the WD1772 block lives at 0x03310000. Other blocks are stubs. */
+static uint8_t ioc_periph_rd8(Ioc *ioc, uint32_t off)
+{
+    if (off >= 0x110000 && off < 0x120000)
+        return fdc_rd8(&ioc->mach->fdc, IOC_BASE + off);
+    if (off >= 0x50000 && off < 0x60000) {
+        if ((off & 0xFFFCu) == 0x70u)
+            return 0x0F; /* monitor type */
+        return 0xFF;
+    }
+    return 0xFF;
+}
+
+static void ioc_periph_wr8(Ioc *ioc, uint32_t off, uint8_t v)
+{
+    if (off >= 0x110000 && off < 0x120000) {
+        fdc_wr8(&ioc->mach->fdc, IOC_BASE + off, v);
+        return;
+    }
+    if (off >= 0x50000 && off < 0x60000) {
+        switch (off & 0xFFFCu) {
+          case 0x18u: fdc_latch_b(&ioc->mach->fdc, v); break; /* latch B */
+          case 0x40u: fdc_latch_a(&ioc->mach->fdc, v); break; /* latch A */
+          default: break;
+        }
+    }
+}
+
 uint8_t ioc_rd8(void *ctx, uint32_t addr)
 {
     Ioc *ioc = ctx;
     uint32_t off = addr - IOC_BASE;
     if (off >= 0x10000)
-        return 0xFF; /* 1MHz peripheral bus: stub */
+        return ioc_periph_rd8(ioc, off);
     return ioc_reg_read(ioc, off);
 }
 
@@ -150,8 +193,10 @@ void ioc_wr8(void *ctx, uint32_t addr, uint8_t v)
 {
     Ioc *ioc = ctx;
     uint32_t off = addr - IOC_BASE;
-    if (off >= 0x10000)
+    if (off >= 0x10000) {
+        ioc_periph_wr8(ioc, off, v);
         return;
+    }
     ioc_reg_write(ioc, off, v, ioc->mach != NULL ? &ioc->mach->cpu : NULL);
 }
 
@@ -159,8 +204,13 @@ uint32_t ioc_rd32(void *ctx, uint32_t addr)
 {
     Ioc *ioc = ctx;
     uint32_t off = addr - IOC_BASE;
+    if (off >= 0x110000 && off < 0x120000)
+        return fdc_rd32(&ioc->mach->fdc, addr);
     if (off >= 0x10000)
-        return 0xFFFFFFFFu;
+        return (uint32_t)ioc_periph_rd8(ioc, off & ~3u)
+             | ((uint32_t)ioc_periph_rd8(ioc, (off & ~3u) + 1) << 8)
+             | ((uint32_t)ioc_periph_rd8(ioc, (off & ~3u) + 2) << 16)
+             | ((uint32_t)ioc_periph_rd8(ioc, (off & ~3u) + 3) << 24);
     return (uint32_t)ioc_reg_read(ioc, off & ~3u)
          | ((uint32_t)ioc_reg_read(ioc, (off & ~3u) + 1) << 8)
          | ((uint32_t)ioc_reg_read(ioc, (off & ~3u) + 2) << 16)
@@ -171,8 +221,15 @@ void ioc_wr32(void *ctx, uint32_t addr, uint32_t v)
 {
     Ioc *ioc = ctx;
     uint32_t off = addr - IOC_BASE;
-    if (off >= 0x10000)
+    if (off >= 0x110000 && off < 0x120000) {
+        fdc_wr32(&ioc->mach->fdc, addr, v); /* latches D16-D23 */
         return;
+    }
+    if (off >= 0x10000) {
+        /* peripheral bus: latch D16-D23 on word stores */
+        ioc_periph_wr8(ioc, off & ~3u, (uint8_t)((v >> 16) & 0xFF));
+        return;
+    }
     /* IOC latches D16-D23 on word stores */
     ioc_reg_write(ioc, off & ~3u, (uint8_t)((v >> 16) & 0xFF),
                   ioc->mach != NULL ? &ioc->mach->cpu : NULL);

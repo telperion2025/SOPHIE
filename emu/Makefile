@@ -12,16 +12,16 @@ CFLAGS  ?= -O2 -std=c11 -Wall -Wextra
 CPPFLAGS = -Icore -Imach -Ihost -Itests
 
 CORE_SRC = core/arm26.c mach/mem.c
-MACH_SRC = mach/memc.c mach/vidc.c mach/ioc.c mach/machine.c
+MACH_SRC = mach/memc.c mach/vidc.c mach/ioc.c mach/fdc.c mach/disc.c mach/machine.c
 HOST_SRC = host/host.c host/host_headless.c host/keymap.c
 LIB_SRC  = $(CORE_SRC) $(MACH_SRC) $(HOST_SRC)
 LIB_OBJ  = $(LIB_SRC:.c=.o)
 
-TESTS = tests/arm26_test tests/arm26_ext_test tests/mmio_test tests/machine_test tests/host_test
+TESTS = tests/arm26_test tests/arm26_ext_test tests/mmio_test tests/machine_test tests/host_test tests/fdc_test
 
 .PHONY: all test bench clean host-x11
 
-all: $(TESTS) tests/bench tools/romboot tools/sophie
+all: $(TESTS) tests/bench tools/romboot tools/sophie tools/mkadfs
 
 host-x11: tools/sophie-x11
 
@@ -40,6 +40,9 @@ tests/machine_test: tests/machine_test.o $(LIB_OBJ)
 tests/host_test: tests/host_test.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
+tests/fdc_test: tests/fdc_test.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^
+
 tests/bench: tests/bench.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
@@ -47,6 +50,9 @@ tools/romboot: tools/romboot.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
 tools/sophie: tools/sophie.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^
+
+tools/mkadfs: tools/mkadfs.o
 	$(CC) $(CFLAGS) -o $@ $^
 
 # X11 window backend variant (dlopen'd libX11; runtime-only dependency)
@@ -63,7 +69,7 @@ tools/sophie-x11: tools/sophie.o $(CORE_SRC:.c=.o) $(MACH_SRC:.c=.o) \
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c -o $@ $<
 
--include $(LIB_OBJ:.o=.d) $(TESTS:=.d) tests/bench.d tools/romboot.d tools/sophie.d
+-include $(LIB_OBJ:.o=.d) $(TESTS:=.d) tests/bench.d tools/romboot.d tools/sophie.d tools/mkadfs.d
 
 test: $(TESTS)
 	./tests/arm26_test
@@ -71,6 +77,7 @@ test: $(TESTS)
 	./tests/mmio_test
 	./tests/machine_test
 	./tests/host_test
+	./tests/fdc_test
 
 bench: tests/bench
 	./tests/bench 1000000
@@ -84,4 +91,4 @@ bench: tests/bench
 
 clean:
 	rm -f $(LIB_OBJ) $(LIB_OBJ:.o=.d) host/*.o host/*.d tests/*.o tests/*.d tools/*.o tools/*.d \
-	      $(TESTS) tests/bench tools/romboot tools/sophie tools/sophie-x11
+	      $(TESTS) tests/bench tools/romboot tools/sophie tools/sophie-x11 tools/mkadfs

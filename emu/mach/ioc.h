@@ -3,7 +3,14 @@
  *
  * Register region: 0x03200000-0x033FFFFF. The internal register file is
  * byte-wide and mirrored through the region (register = (addr-0x03200000)
- * & 0x7F); offsets >= 0x10000 are the 1MHz peripheral bus (stub: reads 0xFF).
+ * & 0x7F). Offsets >= 0x10000 are the 1MHz peripheral bus:
+ *   0x050000-0x05FFFF  peripheral 5 (0x03250000): latch B at +0x18 (FDC
+ *                      DDEN/reset), latch A at +0x40 (floppy drive select/
+ *                      side/motor), monitor type at +0x70 reads 0x0F; other
+ *                      offsets read 0xFF (open bus) and ignore writes
+ *   0x110000-0x11FFFF  WD1772 floppy controller block (0x03310000), routed
+ *                      to the machine's Fdc (see fdc.h)
+ *   other peripheral blocks: stub (reads 0xFF, writes ignored)
  * IOC registers sit on data-bus lanes D16-D23: a word store latches
  * (v>>16)&0xFF, a byte store (replicated on all lanes) latches the byte.
  * Word reads are composed little-endian from byte reads (simplification,
@@ -21,6 +28,8 @@
  * IRQ A bits: 7 force, 6 timer1, 5 timer0, 4 POR, 3 IR (VIDC flyback/vsync),
  * 2 IF, 1 IL7, 0 IL6. IRQ request reads return status & mask.
  * IRQ B bits: 7 KART Rx full, 6 KART Tx empty, 0-5 IL0-IL5.
+ * FIQ bits: 7 force, 1 FH1 (floppy INTRQ), 0 FH0 (floppy DRQ); the FIQ
+ * request register reads status & mask and is write-1-clear on status.
  * Timers 0/1 run at 2 MHz and raise IRQ A bits 5/6 on underflow, reloading
  * from their latches (continuous). T2/T3 are baud/KART clocks (no IRQ).
  *
@@ -82,6 +91,9 @@ void ioc_tick(Ioc *ioc, struct Arm26 *cpu, uint32_t cycles_delta);
 
 /* VIDC flyback (vsync) input: sets IRQ status A bit 3 (IR line). */
 void ioc_flyback(Ioc *ioc);
+
+/* Drive an external FIQ source line (e.g. FDC INTRQ/DRQ) into FIQ status. */
+void ioc_fiq_line(Ioc *ioc, uint8_t mask, int state);
 
 /* Queue a keyboard byte (KART Rx). ioc_key_press sends a make code,
  * ioc_key_release the matching break code (byte | 0x80). */

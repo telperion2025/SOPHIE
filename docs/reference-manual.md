@@ -125,18 +125,24 @@ ignored; both are counted in `bus.unmapped_rd`/`unmapped_wr`.
 | 0x00000000–0x01FFFFFF | logical window via MEMC — **boot ROM latched at reset**, then CAM-walked to physical DRAM |
 | 0x02000000–0x02FFFFFF | physical DRAM window (direct alias, `is_ram`) |
 | 0x03000000–0x031FFFFF | podule/expansion space (stub, reads 0xFF) |
-| 0x03200000–0x033FFFFF | IOC (registers at low 0x80, mirrored; 1 MHz peripheral bus at +0x10000, stub) |
+| 0x03200000–0x033FFFFF | IOC (registers at low 0x80, mirrored; 1 MHz peripheral bus at +0x10000: peripheral 5 at 0x03250000 holds the floppy latches, the WD1772 block sits at 0x03310000; other blocks stub) |
+| 0x03250018 | floppy latch B (bit 1 DDEN, bit 3 master reset, active low) |
+| 0x03250040 | floppy latch A (bits 0-3 drive select active-low, bit 4 side, bit 5 motor active-low) |
+| 0x03310000–0x0331FFFF | WD1772 floppy controller (registers at +0x00/+0x04/+0x08/+0x0C, see §4.6) |
 | 0x03400000–0x035FFFFF | VIDC (write-only registers) |
 | 0x03600000–0x037FFFFF | MEMC registers |
 | 0x03800000–0x03FFFFFF | ROM window, 8MB: image mirrors across it (reads return ROM; **writes program the MEMC CAM**) |
 
 ```c
 void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size);
-void machine_run(Machine *m, uint64_t n);  /* executes and ticks the IOC timers */
+int  machine_disc_attach(Machine *m, int drive, const char *path, int wprot); /* WP7 */
+void machine_disc_detach(Machine *m, int drive);
+void machine_run(Machine *m, uint64_t n);  /* executes and ticks IOC/VIDC/FDC */
 ```
 
-`machine_run` runs the CPU in small batches and advances the IOC timers by
-the elapsed cycles, so IRQ-driven guest loops work.
+`machine_run` runs the CPU in small batches and advances the IOC timers, the
+VIDC frame timer and the FDC command engine by the elapsed cycles, so
+IRQ/FIQ-driven guest loops work.
 
 ### 4.2 MEMC (`memc.[ch]`)
 
@@ -250,7 +256,37 @@ by CI and tests) and `host_x11.c` (real X11 window, libX11 via dlopen so the
 default build has no X11 dependency; build with `make host-x11`, used when
 `DISPLAY` is set). `tools/sophie.c` is the frontend: boot a ROM, render each
 VIDC frame (1024x768, 160000 cycles/frame at 8 MHz/50 Hz), present, pump
-input.
+input; `--disc N=path.adf` attaches a disc image to floppy drive N (0-3),
+`--ro` makes it write-protected.
+
+### 4.6 WD1772 floppy controller + disc images (`fdc.[ch]`, `disc.[ch]`, WP7)
+
+The WD1772 model covers the register block at 0x03310000–0x0331FFFF
+(register selected by address bits 3:2: +0x00 status/command, +0x04 track,
++0x08 sector, +0x0C data; like the IOC the chip latches D16–D23 on word
+stores). Status bits: BUSY 0x01, DRQ 0x02, TR00 0x04, CRC 0x08, RNF 0x10,
+spin-up 0x20, WP 0x40, motor-off 0x80. INTRQ drives IOC FIQ status bit 0x02
+(FH1), DRQ drives FIQ bit 0x01 (FH0); reading status clears INTRQ, writing a
+command clears INTRQ, reading/writing data clears DRQ. Commands are modelled
+at sector granularity on an absolute 8 MHz cycle timeline (spin-up ~15 ms,
+~3 ms/step, ~10 ms to a sector's first byte, ~6 µs/byte): type I
+(restore/seek/step in/out with the U track-update flag), read sector (single
+and multiple), write sector (single and multiple), read address (6 ID bytes),
+read track, and force interrupt (0xD0, aborts and raises INTRQ if bit 3 set).
+Drive select/side/motor come from latch A (0x03250040), density (DDEN) and
+master reset from latch B (0x03250018). Write track (0xF0, used by formatters)
+streams and discards the data — formatting a data-only image is not
+supported (see §7).
+
+`disc.c` backs up to 4 drives with raw sector images ("data only" .adf/.adl/
+.img files); geometry is inferred from the file size (ADFS S/M/L, D/E, F, G
+and DOS 360K/400K/720K). Linear layout: `offset = ((track*sides + side)*spt
++ (sector-base))*sectsize` with sides interleaved within a track; sector
+numbers are 1-based for 512-byte sectors and 0-based otherwise, matching the
+studied emulators. `tools/mkadfs.c` writes a blank, formatted ADFS L (640K,
+80x2x16x256, old map) image: free-space map in sectors 0-1 (255-start
+downward carry-fold checksums), empty "Hugo" root directory "$" in sectors
+2-6.
 
 ## 5. Tests (`emu/tests/`)
 
@@ -272,11 +308,20 @@ input.
 - `test.h` — shared `check()` harness and the `Rig` (CPU + flat-RAM bus).
 - `host_test.c` — WP5 host layer tests (headless backend cycle, PPM pixels,
   keymap, KART injection via `host_pump_input`).
-- `../tools/romboot.c` — WP4 smoke tool (not in `make test`): loads a ROM
-  image from `roms/` into the Archimedes machine and runs N instructions,
-  printing final PC/mode/MEMC/bus stats.
-- `../tools/sophie.c` — WP5 frontend (not in `make test`): boots a ROM and
-  presents VIDC frames through the host window layer with keyboard input.
+- `fdc_test.c` — WP7 acceptance (33 checks): WD1772 register map, D16-D23
+  word-store latching, type I commands, read/write sector against a real
+  image (DRQ→FIQ FH0 per byte, INTRQ→FH1 on completion), RNF, write protect,
+  read address, force interrupt, master reset, drive latches, disc geometry
+  table — plus an end-to-end guest ARM program that boots from the ROM window
+  and reads a 1024-byte sector through the bus.
+- `../tools/romboot.c` — WP4/WP7 smoke tool (not in `make test`): loads a ROM
+  image from `roms/` into the Archimedes machine, optionally with
+  `--disc N=path`, and runs N cycles, printing final PC/MEMC/bus/FDC stats.
+- `../tools/sophie.c` — WP5/WP7 frontend (not in `make test`): boots a ROM and
+  presents VIDC frames through the host window layer with keyboard input;
+  `--disc N=path.adf [--ro]` attaches disc images.
+- `../tools/mkadfs.c` — WP7 tool (not in `make test`): writes a blank,
+  formatted ADFS L disc image.
 
 Run everything with `make test`; benchmark with `make bench`.
 
@@ -301,9 +346,12 @@ Remaining known limitations:
 - VIDC sound is register capture only; the IOC word-read lane simplification
   is documented in §4.4; MEMC protection levels are stored but not enforced
   (§4.2). VIDC flyback (vsync) and KART keyboard interrupts are delivered
-  (§4.3/§4.4), but the floppy (WD1772) and full podule/1MHz bus are not
-  modelled yet, so real-ROM boot still stops short of the desktop (WP4/WP7
-  continue).
+  (§4.3/§4.4), and the WD1772 floppy controller with disc images is modelled
+  (§4.6, WP7) — but the full podule/1MHz bus, CMOS/RTC and hard-disc
+  (HD63463/IDE) are still stubs, and the WD1772 write-track (format) command
+  discards data, so real-ROM boot still stops short of the desktop (WP7/M3
+  continue: RISC OS 3.00 POSTs and idles in its OS loop without probing the
+  floppy, because the CMOS reads return 0xFF with no CMOS device modelled).
 - `SWI 0` halt convention (test harness only).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
@@ -338,6 +386,7 @@ Remaining known limitations:
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
 | `machine_test` (18 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3/WP4) |
+| `fdc_test` (33 checks) | WP7 acceptance: WD1772 register map/status/command model, DRQ/INTRQ→IOC FIQ FH0/FH1, latches A/B, type I + read/write sector + read address + force interrupt + master reset against disc images, plus guest-code end-to-end sector read (§10 WP7; WD1772 datasheet) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 
 The whole suite is the acceptance criterion for the future RISC-V and

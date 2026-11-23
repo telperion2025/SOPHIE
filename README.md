@@ -32,8 +32,9 @@ tested:
 | WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `emu/tests/machine_test.c` (13/13 pass) |
 | WP6 (core part) | ARMv4 core extensions: group-011 register-offset LDR/STR, halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc` | **done** — `emu/core/arm26.c`, `emu/tests/arm26_ext_test.c` (15/15 pass); `emu/tools/romboot.c` smoke-boots real ROM images from `roms/`. Risc PC (IOMD/VIDC20) machine model: pending |
 | WP4 (machine part) | MEMC1A CAM walk (reset ROM latch, data-encoded page entries via the ROM window, 4K/8K/16K/32K pages, control/DMA registers); VIDC flyback (vsync) IRQ via IOC IRQA bit 3; IOC KART keyboard path with make/break queue | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `machine_test` 18/18 (dummy ROM boots through the CAM; timer + vsync + keyboard IRQs verified end to end), `romboot`: ROM300 passes POST and settles in the OS idle loop (stable polling loop with IRQs flowing, 200M cycles, zero unmapped reads — spec M2); ROM200/ROM300 run from CAM-mapped DRAM; ROM window mirrors across the full 8MB (0x03800000–0x03FFFFFF) as on hardware |
-| WP5 (host layer) | Host window layer: backend interface + headless (PPM/scripted input, CI-tested) + X11 backend (dlopen, `make host-x11`); `tools/sophie` frontend boots a ROM and presents VIDC frames with keyboard input | **layer done** — `emu/host/`, `emu/tools/sophie.c`, `host_test` 11/11; visible desktop pending WP7 disc images (ROM300 currently idles in the OS loop with a black screen) |
-| WP4–WP7 (remaining) | Real ROM boot to visible desktop, disc images | ROMs local in `roms/` (dev branch carries `ROMS/`); needs WD1772 floppy + FileCore images so RISC OS can initialise the screen and reach the desktop; see spec section 10 |
+| WP5 (host layer) | Host window layer: backend interface + headless (PPM/scripted input, CI-tested) + X11 backend (dlopen, `make host-x11`); `tools/sophie` frontend boots a ROM and presents VIDC frames with keyboard input | **done** — `emu/host/`, `emu/tools/sophie.c`, `host_test` 11/11; visible desktop pending M3 (ROM300 currently idles in the OS loop with a black screen — no CMOS device yet) |
+| WP7 (disc images) | WD1772 floppy controller model at 0x03310000 (DRQ/INTRQ → IOC FIQ FH0/FH1, latches A/B at 0x03250040/0x03250018) + raw disc image backend (ADFS S/M/L/D/E/F/G, DOS 360-720K) + `mkadfs` blank-image tool + `--disc N=path` on `sophie`/`romboot` | **done** — `emu/mach/{fdc,disc}.[ch]`, `emu/tools/mkadfs.c`, `fdc_test` 33/33 incl. a guest-code end-to-end sector read; ROM300 still idles in its OS loop (no CMOS device modelled yet) — desktop boot is M3 |
+| M3 (remaining) | Real ROM boot to visible desktop | ROMs local in `roms/` (dev branch carries `ROMS/`); needs CMOS/RTC model + hard-disc so RISC OS finishes init; see spec section 10 |
 | M6+ | Native RISC OS-shaped desktop / module set | `native/` — not started (per spec) |
 
 ## Quick start (host build)
@@ -43,7 +44,7 @@ the JS reference suite/benchmark for comparison).
 
 ```sh
 make          # build the emulator library, tests and benchmark
-make test     # run the full test suite (arm26 42 + arm26_ext 15 + mmio 9 + machine 18 + host 11 assertions)
+make test     # run the full test suite (arm26 42 + arm26_ext 15 + mmio 9 + machine 18 + host 11 + fdc 33 assertions)
 make bench    # C benchmark, then the JS reference benchmark if node is present
 make clean
 ```
@@ -52,7 +53,8 @@ With a local ROM image in `roms/` (runtime data, not committed at release):
 
 ```sh
 emu/tools/romboot roms/ROM300 5000000          # WP4 smoke: run 5M instructions
-emu/tools/sophie roms/ROM300 100 --ppm /tmp/f.ppm   # WP5 headless frontend: PPM frame snapshots
+emu/tools/mkadfs /tmp/blank.adl MyDisc         # WP7: blank ADFS L (640K) disc image
+emu/tools/sophie roms/ROM300 100 --ppm /tmp/f.ppm --disc 0=/tmp/blank.adl   # WP5+WP7 headless frontend
 make -C emu host-x11 && emu/tools/sophie-x11 roms/ROM300   # WP5 with a real X11 window (DISPLAY set)
 ```
 
