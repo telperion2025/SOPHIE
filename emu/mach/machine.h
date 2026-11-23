@@ -2,14 +2,14 @@
  * machine.h - Archimedes base machine (WP3): memory map + device wiring.
  *
  * Memory map (32MB logical space, Acorn Archimedes A3xx/A4xx layout):
- *   0x00000000-0x01FFFFFF  logical RAM via MEMC (ROM at reset, DRAM after
- *                          the control register is written)
+ *   0x00000000-0x01FFFFFF  logical window via MEMC (boot ROM latched at
+ *                          reset; CAM-walked to DRAM after the CAM is set up)
  *   0x02000000-0x02FFFFFF  physical DRAM window (direct alias)
  *   0x03000000-0x031FFFFF  podule/expansion space (stub)
  *   0x03200000-0x033FFFFF  IOC (registers at low 0x80, 1MHz bus above 0x10000)
  *   0x03400000-0x035FFFFF  VIDC (write-only registers)
  *   0x03600000-0x037FFFFF  MEMC registers
- *   0x03800000-0x03BFFFFF  ROM (read-only)
+ *   0x03800000-0x03BFFFFF  ROM (reads return ROM; writes program the MEMC CAM)
  *
  * machine_run() executes instructions and advances the IOC timers, so
  * IRQ-driven guest loops work. Host video/input frontends (WP5) attach to

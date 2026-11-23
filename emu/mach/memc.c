@@ -177,8 +177,8 @@ uint8_t memc_rd8(void *ctx, uint32_t addr)
 void memc_wr8(void *ctx, uint32_t addr, uint8_t v)
 {
     (void)addr;
-    /* byte writes replicate on all lanes; MEMC decodes the top byte */
-    memc_reg_w(ctx, ((uint32_t)v << 24) | 0x00FFFFFFu);
+    /* ARM STRB replicates the byte on all four data lanes */
+    memc_reg_w(ctx, (uint32_t)v * 0x01010101u);
 }
 
 uint32_t memc_rd32(void *ctx, uint32_t addr)

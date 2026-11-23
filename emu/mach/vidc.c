@@ -5,14 +5,36 @@
 #include "vidc.h"
 #include "memc.h"
 #include "machine.h"
+#include "ioc.h"
 
 #include <string.h>
+
+#define VIDC_CPU_HZ 8000000u
 
 void vidc_init(Vidc *vidc, Machine *mach)
 {
     memset(vidc, 0, sizeof *vidc);
     vidc->mach = mach;
     vidc->border = 0;
+}
+
+void vidc_tick(Vidc *vidc, uint32_t cycles_delta)
+{
+    static const uint32_t pixel_rate[4] = { 8000000u, 12000000u, 16000000u, 24000000u };
+    uint32_t hcr = ((vidc->regs[VIDC_REG_CRTC + VIDC_CRTC_HCR] >> 14) << 1) + 2;
+    uint32_t vcr = (vidc->regs[VIDC_REG_CRTC + VIDC_CRTC_VCR] >> 14) + 1;
+    uint32_t vlines = vcr * (uint32_t)(vidc->interlace + 1);
+    if (hcr < 2 || vlines < 2)
+        return; /* no valid mode programmed: no vsync */
+    uint64_t frame_cycles = (uint64_t)hcr * vlines * pixel_rate[vidc->pixel_clock & 3] / VIDC_CPU_HZ;
+    if (frame_cycles == 0)
+        return;
+    vidc->frame_acc += cycles_delta;
+    while (vidc->frame_acc >= frame_cycles) {
+        vidc->frame_acc -= frame_cycles;
+        if (vidc->mach != NULL)
+            ioc_flyback(&vidc->mach->ioc); /* vsync: IRQ status A bit 3 */
+    }
 }
 
 static uint32_t pal12_to_rgb(uint32_t v)
@@ -57,8 +79,8 @@ uint8_t vidc_rd8(void *ctx, uint32_t addr)
 void vidc_wr8(void *ctx, uint32_t addr, uint8_t v)
 {
     (void)addr;
-    /* STRB replicates the byte on all four data lanes */
-    vidc_write(ctx, ((uint32_t)v << 24) | 0x00FFFFFFu);
+    /* ARM STRB replicates the byte on all four data lanes */
+    vidc_write(ctx, (uint32_t)v * 0x01010101u);
 }
 
 uint32_t vidc_rd32(void *ctx, uint32_t addr)

@@ -188,6 +188,14 @@ registers with the VIDC1 arithmetic (`HCR=((v>>14)<<1)+2`, `HBSR/HBER =
 bits +1) and rasterises from the MEMC video-start address into a 32bpp
 0xRRGGBB framebuffer.
 
+**Flyback (vsync) interrupt (WP4)**: `vidc_tick(vidc, cycles)` (called from
+`machine_run` alongside `ioc_tick`) counts CPU cycles per frame as
+`HCR * VCR * (interlace+1)` pixel clocks, with the pixel clock selected by
+control bits 1:0 (`{8,12,16,24}` MHz, CPU at 8 MHz). Each frame end raises
+the VIDC flyback line, which the IOC latches as **IRQ status A bit 3 (0x08,
+IR line)** — the Archimedes vsync interrupt that RISC OS's screen driver
+hooks. With no valid CRTC mode programmed (HCR/VCR < 2) no vsync fires.
+
 ### 4.4 IOC (`ioc.[ch]`)
 
 Byte-wide register file at 0x03200000, mirrored through the region
@@ -205,17 +213,26 @@ little-endian from byte reads (documented simplification).
 | 0x30 / 0x34 / 0x38 | FIQ_STATUS / FIQ_REQUEST / FIQ_MASK |
 | 0x40–0x4C | T0 latch lo/hi, GO, LATCH (likewise T1 0x50, T2 0x60, T3 0x70) |
 
-IRQ A bits: 7 force (POR), 6 timer1, 5 timer0, 4 POR, 2 IR, 1 IF, 0 IL7.
-IRQ B bits: 7 KART Rx full, 6 KART Tx empty, 0–5 IL0–IL5. Reset status:
-IRA = 0x90, IRB = 0x40, FIQ = 0x80. Timers 0/1 run at 2 MHz (4 CPU cycles
-per tick at the 8 MHz CPU clock), raise IRQ A bits 5/6 on underflow and
-reload continuously from their latches; T2/T3 are baud/KART clocks (no
-IRQ). The IRQ/FIQ lines to the CPU are `(status & mask) != 0`.
+IRQ A bits: 7 force, 6 timer1, 5 timer0, 4 POR, **3 IR (VIDC flyback/vsync)**,
+2 IF, 1 IL7, 0 IL6. IRQ B bits: 7 KART Rx full, 6 KART Tx empty, 0–5 IL0–IL5.
+Request registers (0x14/0x24/0x34) read as `status & mask`; writing them
+clears the corresponding status bits (write-1-clear; mask 0x7C on A).
+Reset status: IRA = 0x90, IRB = 0x40, FIQ = 0x80. Timers 0/1 run at 2 MHz
+(4 CPU cycles per tick at the 8 MHz CPU clock), raise IRQ A bits 5/6 on
+underflow and reload continuously from their latches; T2/T3 are baud/KART
+clocks (no IRQ). The IRQ/FIQ lines to the CPU are `(status & mask) != 0`.
 
 ```c
 void ioc_tick(Ioc *ioc, Arm26 *cpu, uint32_t cycles_delta);
-void ioc_key_press(Ioc *ioc, uint8_t byte);   /* KART queue */
+void ioc_flyback(Ioc *ioc);                    /* VIDC vsync -> IRQA bit 3 */
+void ioc_key_press(Ioc *ioc, uint8_t byte);    /* KART make code */
+void ioc_key_release(Ioc *ioc, uint8_t byte);  /* KART break code (byte|0x80) */
 ```
+
+The KART path is a 16-byte Rx queue: a byte lands in the KART register with
+IRQ B bit 7 (Rx full) set; reading KART clears Rx-full and pops the next
+queued byte (keyboard make/break protocol: press = keycode, release =
+keycode|0x80). Queuing a byte updates the CPU IRQ line immediately.
 
 ## 5. Tests (`emu/tests/`)
 
@@ -230,7 +247,9 @@ void ioc_key_press(Ioc *ioc, uint8_t byte);   /* KART queue */
   priority, RAM regression, top-word byte masking).
 - `machine_test.c` — WP3/WP4 dummy-ROM acceptance: the ROM programs the MEMC
   control register (32K pages) and the CAM from the ROM window, unlatching
-  the boot ROM, then boots from CAM-mapped DRAM (see §8).
+  the boot ROM, then boots from CAM-mapped DRAM; the IRQ handler tallies
+  timer, VIDC-flyback and KART-Rx interrupts so vsync/keyboard IRQ delivery
+  is checked end to end (see §8).
 - `bench.c` — throughput benchmark, mirrored by `emu/ref/bench.mjs`.
 - `test.h` — shared `check()` harness and the `Rig` (CPU + flat-RAM bus).
 - `../tools/romboot.c` — WP4 smoke tool (not in `make test`): loads a ROM
@@ -259,8 +278,10 @@ Remaining known limitations:
   the ARM ARM).
 - VIDC sound is register capture only; the IOC word-read lane simplification
   is documented in §4.4; MEMC protection levels are stored but not enforced
-  (§4.2); VIDC/IOC do not yet raise VSync/keyboard interrupts, so real-ROM
-  boot currently stops short of the desktop (WP4 continues).
+  (§4.2). VIDC flyback (vsync) and KART keyboard interrupts are delivered
+  (§4.3/§4.4), but the floppy (WD1772) and full podule/1MHz bus are not
+  modelled yet, so real-ROM boot still stops short of the desktop (WP4/WP7
+  continue).
 - `SWI 0` halt convention (test harness only).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
@@ -293,7 +314,7 @@ Remaining known limitations:
 | `arm26_test`: swi-*, rti-*, undef-*, irq-*, teqp-usr | exception entry, banking, CPSR restore, mode switch (§2, §9) |
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
-| `machine_test` (13 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer IRQs, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3) |
+| `machine_test` (15 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3/WP4) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 
 The whole suite is the acceptance criterion for the future RISC-V and

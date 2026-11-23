@@ -46,7 +46,14 @@ void ioc_tick(Ioc *ioc, Arm26 *cpu, uint32_t cycles_delta)
         ioc_update_lines(ioc, cpu);
 }
 
-void ioc_key_press(Ioc *ioc, uint8_t byte)
+void ioc_flyback(Ioc *ioc)
+{
+    ioc->regs[IOC_IRQ_STATUS_A] |= IOC_IRA_FLYBACK;
+    if (ioc->mach != NULL)
+        ioc_update_lines(ioc, &ioc->mach->cpu);
+}
+
+static void ioc_key_push(Ioc *ioc, uint8_t byte)
 {
     int next = (ioc->key_tail + 1) % 16;
     if (next == ioc->key_head)
@@ -54,15 +61,33 @@ void ioc_key_press(Ioc *ioc, uint8_t byte)
     if (ioc->key_head == ioc->key_tail && !(ioc->regs[IOC_IRQ_STATUS_B] & IOC_IRB_KART_RX_FULL)) {
         ioc->regs[IOC_KART] = byte;
         ioc->regs[IOC_IRQ_STATUS_B] |= IOC_IRB_KART_RX_FULL;
-        return;
+    } else {
+        ioc->key_queue[ioc->key_tail] = byte;
+        ioc->key_tail = next;
     }
-    ioc->key_queue[ioc->key_tail] = byte;
-    ioc->key_tail = next;
+    if (ioc->mach != NULL)
+        ioc_update_lines(ioc, &ioc->mach->cpu);
+}
+
+void ioc_key_press(Ioc *ioc, uint8_t byte)
+{
+    ioc_key_push(ioc, byte);
+}
+
+void ioc_key_release(Ioc *ioc, uint8_t byte)
+{
+    ioc_key_push(ioc, (uint8_t)(byte | 0x80u));
 }
 
 static uint8_t ioc_reg_read(Ioc *ioc, uint32_t off)
 {
     uint8_t r = off & 0x7F;
+    if (r == IOC_IRQ_REQUEST_A)
+        return (uint8_t)(ioc->regs[IOC_IRQ_STATUS_A] & ioc->regs[IOC_IRQ_MASK_A]);
+    if (r == IOC_IRQ_REQUEST_B)
+        return (uint8_t)(ioc->regs[IOC_IRQ_STATUS_B] & ioc->regs[IOC_IRQ_MASK_B]);
+    if (r == IOC_FIQ_REQUEST)
+        return (uint8_t)(ioc->regs[IOC_FIQ_STATUS] & ioc->regs[IOC_FIQ_MASK]);
     if (r == IOC_KART) {
         uint8_t v = ioc->regs[IOC_KART];
         ioc->regs[IOC_IRQ_STATUS_B] &= (uint8_t)~IOC_IRB_KART_RX_FULL;
@@ -82,6 +107,9 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
     switch (r) {
       case IOC_IRQ_REQUEST_A:
         ioc->regs[IOC_IRQ_STATUS_A] &= (uint8_t)~(v & 0x7C); /* write-1-clear */
+        break;
+      case IOC_IRQ_REQUEST_B:
+        ioc->regs[IOC_IRQ_STATUS_B] &= (uint8_t)~v; /* write-1-clear */
         break;
       case IOC_IRQ_MASK_A:
       case IOC_IRQ_MASK_B:

@@ -3,8 +3,8 @@
  *
  * Register region: 0x03400000-0x035FFFFF, write-only. A word store to any
  * address in the region delivers {register, value} as reg = v>>24,
- * val = v & 0xFFFFFF (byte stores replicate the byte on all bus lanes, so
- * reg = byte, val = 0xFFFFFF). Reads return open bus.
+ * val = v & 0xFFFFFF (ARM STRB replicates the byte on all four bus lanes,
+ * so reg = byte, val = 0xVVVVVV). Reads return open bus.
  *
  * VIDC1 register file (reg index = byte>>2 within the region):
  *   0x00-0x0F display palette (12-bit BGR: b=bits 11:8, g=7:4, r=3:0)
@@ -59,11 +59,18 @@ typedef struct Vidc {
     int      bpp;          /* decoded control: 0..3 */
     int      pixel_clock;  /* decoded control: 0..3 */
     int      interlace;    /* decoded control bit 6 */
+    uint64_t frame_acc;    /* CPU cycles accumulated towards the next vsync */
     Machine *mach;
 } Vidc;
 
 void vidc_init(Vidc *vidc, Machine *mach);
 void vidc_write(Vidc *vidc, uint32_t v);   /* one register write */
+
+/* Advance the frame timer by delta CPU cycles; each frame end raises the
+ * flyback (vsync) interrupt through the IOC (IRQ status A bit 3). Frame
+ * period = HCR * VCR * (interlace+1) pixel clocks, pixel clock selected by
+ * control bits 1:0 ({8,12,16,24} MHz), CPU clock 8 MHz. */
+void vidc_tick(Vidc *vidc, uint32_t cycles_delta);
 
 /* region callbacks for [VIDC_BASE, VIDC_BASE+VIDC_SIZE) */
 uint8_t  vidc_rd8(void *ctx, uint32_t addr);

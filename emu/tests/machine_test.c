@@ -43,9 +43,12 @@ static uint32_t A_ADD_IMM(int rd, int rn, uint32_t imm) { return 0xE2800000u | (
 static uint32_t A_CMP_R(int rn, int rm)           { return 0xE1500000u | ((uint32_t)rn << 16) | (uint32_t)rm; }
 static uint32_t A_B(uint32_t pc, uint32_t target) { return 0xEA000000u | (((target - (pc + 8)) >> 2) & 0xFFFFFFu); }
 static uint32_t A_BNE(uint32_t pc, uint32_t target) { return 0x1A000000u | (((target - (pc + 8)) >> 2) & 0xFFFFFFu); }
+static uint32_t A_BEQ(uint32_t pc, uint32_t target) { return 0x0A000000u | (((target - (pc + 8)) >> 2) & 0xFFFFFFu); }
 static uint32_t A_STR(int rd, int rn, uint32_t off)  { return 0xE5800000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
 static uint32_t A_LDR(int rd, int rn, uint32_t off)  { return 0xE5900000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
 static uint32_t A_STRB(int rd, int rn, uint32_t off) { return 0xE5C00000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
+static uint32_t A_LDRB(int rd, int rn, uint32_t off) { return 0xE5D00000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
+static uint32_t A_TST_IMM(int rn, uint32_t imm)    { return 0xE1100000u | ((uint32_t)rn << 16) | A_IMM12(imm); }
 static uint32_t A_LDMIA(int rn, uint32_t list) { return 0xE8900000u | ((uint32_t)rn << 16) | (list & 0xFFFFu); }
 static uint32_t A_STMIA(int rn, uint32_t list) { return 0xE8800000u | ((uint32_t)rn << 16) | (list & 0xFFFFu); }
 static uint32_t A_TEQP(int rn) { return 0xE330F000u | ((uint32_t)rn << 16); }
@@ -108,7 +111,7 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_MOV_LSL(3, 3, 12);     pc += 4;   /* r3 = 0x3000 */
     *c++ = A_MOV_IMM(4, 2);         pc += 4;
     *c++ = A_STR(4, 3, 0);          pc += 4;
-    /* IOC: r2 = 0x03200000; timer0 latch 0x00FF, GO; ack; mask = timer0 */
+    /* IOC: r2 = 0x03200000; timer0 latch 0x00FF, GO; ack; masks: A=timer0|flyback, B=KART Rx */
     *c++ = A_MOV_IMM(2, 0x32);      pc += 4;
     *c++ = A_MOV_LSL(2, 2, 20);     pc += 4;   /* r2 = 0x03200000 */
     *c++ = A_MOV_IMM(5, 0xFF);      pc += 4;
@@ -116,9 +119,11 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_MOV_IMM(5, 0);         pc += 4;
     *c++ = A_STRB(5, 2, 0x44);      pc += 4;   /* T0 latch hi */
     *c++ = A_STRB(5, 2, 0x48);      pc += 4;   /* T0 GO */
-    *c++ = A_MOV_IMM(5, 0x20);      pc += 4;
-    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack IRQ request A */
-    *c++ = A_STRB(5, 2, 0x18);      pc += 4;   /* IRQ mask A = timer0 */
+    *c++ = A_MOV_IMM(5, 0x28);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack IRQ request A (timer0|flyback) */
+    *c++ = A_STRB(5, 2, 0x18);      pc += 4;   /* IRQ mask A = timer0|flyback */
+    *c++ = A_MOV_IMM(5, 0x80);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x28);      pc += 4;   /* IRQ mask B = KART Rx full */
     /* enable IRQs: CPSR := F|SVC|pc (full replace via TEQP, PC preserved).
      * The PC field is patched in after the block layout is known. */
     *c++ = A_MOV_IMM(0, 0x38);      pc += 4;
@@ -142,19 +147,35 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_STR(4, 5, 0);          pc += 4;
     *c++ = A_B(pc, loop_pc);        pc += 4;
 
-    /* IRQ handler: [0x2004]++, ack timer0, MOVS pc,r14 */
+    /* IRQ handler: [0x2004]++ (all IRQs); if IRQA&0x08 [0x2008]++ (flyback);
+     * if IRB&0x80 [0x200C]++ (KART Rx); ack A=0x28, B=0x80; MOVS pc,r14 */
     c = rom + W_IRQ;
     pc = ROM_BASE_ADDR + W_IRQ * 4;
     *c++ = A_MOV_IMM(6, 2);         pc += 4;
     *c++ = A_MOV_LSL(6, 6, 12);     pc += 4;   /* r6 = 0x2000 */
-    *c++ = A_ADD_IMM(6, 6, 4);      pc += 4;   /* r6 = 0x2004 */
-    *c++ = A_LDR(4, 6, 0);          pc += 4;
+    *c++ = A_LDR(4, 6, 4);          pc += 4;
     *c++ = A_ADD_IMM(4, 4, 1);      pc += 4;
-    *c++ = A_STR(4, 6, 0);          pc += 4;
+    *c++ = A_STR(4, 6, 4);          pc += 4;   /* [0x2004]++ */
     *c++ = A_MOV_IMM(2, 0x32);      pc += 4;
     *c++ = A_MOV_LSL(2, 2, 20);     pc += 4;   /* r2 = 0x03200000 */
-    *c++ = A_MOV_IMM(5, 0x20);      pc += 4;
-    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack timer0 */
+    *c++ = A_LDRB(5, 2, 0x10);      pc += 4;   /* r5 = IRQ_STATUS_A */
+    *c++ = A_TST_IMM(5, 0x08);      pc += 4;
+    int i_beq1 = (int)(c - rom); *c++ = A_BEQ(pc, pc + 16); pc += 4; /* skip increment if bit clear */
+    *c++ = A_LDR(4, 6, 8);          pc += 4;
+    *c++ = A_ADD_IMM(4, 4, 1);      pc += 4;
+    *c++ = A_STR(4, 6, 8);          pc += 4;   /* [0x2008]++ */
+    rom[i_beq1] = A_BEQ(ROM_BASE_ADDR + i_beq1 * 4, pc);
+    *c++ = A_LDRB(5, 2, 0x20);      pc += 4;   /* r5 = IRQ_STATUS_B */
+    *c++ = A_TST_IMM(5, 0x80);      pc += 4;
+    int i_beq2 = (int)(c - rom); *c++ = A_BEQ(pc, pc + 16); pc += 4;
+    *c++ = A_LDR(4, 6, 12);         pc += 4;
+    *c++ = A_ADD_IMM(4, 4, 1);      pc += 4;
+    *c++ = A_STR(4, 6, 12);         pc += 4;   /* [0x200C]++ */
+    rom[i_beq2] = A_BEQ(ROM_BASE_ADDR + i_beq2 * 4, pc);
+    *c++ = A_MOV_IMM(5, 0x28);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack A: timer0|flyback */
+    *c++ = A_MOV_IMM(5, 0x80);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x24);      pc += 4;   /* ack B: KART Rx full */
     *c++ = A_MOVS_PC_R14;           pc += 4;
 
     /* fail: [0x3000] = 1, spin */
@@ -214,13 +235,30 @@ int main(void)
 
     uint8_t irqmask = mem_rd8(&m.bus, 0x03200000u + 0x18);
     snprintf(det, sizeof det, "IRQ_MASK_A=%" PRIx32, irqmask);
-    check("ioc-irq-mask", irqmask == 0x20, det);
+    check("ioc-irq-mask", irqmask == 0x28, det);
 
-    /* keyboard: queue a byte, IRQ B Rx-full set, read KART clears it */
+    /* VIDC vsync: program a CRTC mode (8 MHz pixel clock), then count the
+     * flyback IRQs the dummy-ROM handler tallies in [0x2008] */
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | (2u << 2)); /* 4bpp, pixel clock 0 */
+    mem_wr32(&m.bus, VIDC_BASE, (0x20u << 24) | (100u << 14));         /* HCR */
+    mem_wr32(&m.bus, VIDC_BASE, (0x28u << 24) | (312u << 14));         /* VCR */
+    uint32_t irq0 = mem_rd32(&m.bus, 0x2004);
+    machine_run(&m, 500000);
+    uint32_t vsc = mem_rd32(&m.bus, 0x2008);
+    uint32_t irq1 = mem_rd32(&m.bus, 0x2004);
+    snprintf(det, sizeof det, "vsync-irqs=%" PRIu32 " total %" PRIu32 "->%" PRIu32, vsc, irq0, irq1);
+    check("vsync-irqs-delivered", vsc > 0 && irq1 > irq0, det);
+
+    /* keyboard: queue a byte, IRQ B Rx-full set and delivered to the handler
+     * ([0x200C]); reading KART returns the byte and clears Rx-full */
     ioc_key_press(&m.ioc, 'A');
     uint8_t stb = mem_rd8(&m.bus, 0x03200000u + IOC_IRQ_STATUS_B);
     snprintf(det, sizeof det, "IRB=%" PRIx32, stb);
     check("kart-rx-full", (stb & IOC_IRB_KART_RX_FULL) != 0, det);
+    machine_run(&m, 100000);
+    uint32_t kc = mem_rd32(&m.bus, 0x200C);
+    snprintf(det, sizeof det, "kart-irqs=%" PRIu32, kc);
+    check("kart-irq-delivered", kc > 0, det);
     uint8_t key = mem_rd8(&m.bus, 0x03200000u + IOC_KART);
     stb = mem_rd8(&m.bus, 0x03200000u + IOC_IRQ_STATUS_B);
     snprintf(det, sizeof det, "key=%c IRB=%" PRIx32, key, stb);

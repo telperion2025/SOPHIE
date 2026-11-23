@@ -31,8 +31,8 @@ tested:
 | WP2 | MMIO dispatch layer: device registry routing rd8/wr8/rd32/wr32 | **done** — `emu/mach/mem.[ch]`, `emu/tests/mmio_test.c` (9/9 pass) |
 | WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `emu/tests/machine_test.c` (13/13 pass) |
 | WP6 (core part) | ARMv4 core extensions: group-011 register-offset LDR/STR, halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc` | **done** — `emu/core/arm26.c`, `emu/tests/arm26_ext_test.c` (15/15 pass); `emu/tools/romboot.c` smoke-boots real ROM images from `roms/`. Risc PC (IOMD/VIDC20) machine model: pending |
-| WP4 (MEMC part) | MEMC1A CAM walk: reset ROM latch, data-encoded page entries written via the ROM window, 4K/8K/16K/32K page sizes, control/DMA registers | **done** — `emu/mach/memc.[ch]`, `machine_test` boots a dummy ROM through the CAM (13/13), `romboot` runs real ROM200/ROM300 for millions of cycles (ROM200 executes from CAM-mapped DRAM) |
-| WP4–WP5, WP7 | Real ROM boot to desktop, host window layer, disc images | ROMs now available locally in `roms/` (dev branch carries `ROMS/`); needs fuller device models (VIDC modes/VSync IRQ, IOC keyboard path completion, WD1772) and the host window layer; see spec section 10 |
+| WP4 (machine part) | MEMC1A CAM walk (reset ROM latch, data-encoded page entries via the ROM window, 4K/8K/16K/32K pages, control/DMA registers); VIDC flyback (vsync) IRQ via IOC IRQA bit 3; IOC KART keyboard path with make/break queue | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `machine_test` 15/15 (dummy ROM boots through the CAM; timer + vsync + keyboard IRQs verified end to end), `romboot` runs real ROM200/ROM300 for millions of cycles (ROM200 executes from CAM-mapped DRAM) |
+| WP4–WP5, WP7 | Real ROM boot to desktop, host window layer, disc images | ROMs now available locally in `roms/` (dev branch carries `ROMS/`); needs WD1772 floppy + fuller VIDC modes, then the WP5 host window layer; see spec section 10 |
 | M6+ | Native RISC OS-shaped desktop / module set | `native/` — not started (per spec) |
 
 ## Quick start (host build)

@@ -43,7 +43,7 @@ static void mach_rom_wr8(void *ctx, uint32_t addr, uint8_t v)
     Machine *m = ctx;
     (void)addr;
     m->memc.latchrom = 0;
-    memc_page_w(&m->memc, ((uint32_t)v << 24) | 0x00FFFFFFu);
+    memc_page_w(&m->memc, (uint32_t)v * 0x01010101u); /* STRB replicates on all lanes */
 }
 
 static void mach_rom_wr32(void *ctx, uint32_t addr, uint32_t v)
@@ -127,8 +127,10 @@ void machine_run(Machine *m, uint64_t n)
         uint64_t chunk = n > 64 ? 64 : n;
         arm26_run(&m->cpu, chunk);
         uint64_t did = m->cpu.cycles - before;
-        if (did > 0)
+        if (did > 0) {
             ioc_tick(&m->ioc, &m->cpu, (uint32_t)did);
+            vidc_tick(&m->vidc, (uint32_t)did);
+        }
         n -= did;
         if (did == 0)
             break; /* halted */
