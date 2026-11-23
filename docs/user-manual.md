@@ -57,14 +57,15 @@ Build products land next to their sources (`emu/core/*.o`, `emu/mach/*.o`,
 make test
 ```
 
-This runs three suites:
+This runs five suites:
 
 | Suite | Binary | What it proves |
 | --- | --- | --- |
 | `arm26` | `emu/tests/arm26_test` | The C core passes all **42 assertions** of the transplanted JS suite (spec Appendix B): data processing and flags, shifter carries, MUL, SWP, LDR/STR incl. unaligned-load rotation, LDM/STM all four stack orders with r15-as-CPSR stores, exception entry (SWI/IRQ/undefined), MOVS pc full-CPSR restore, TEQP mode switch, loops, SWI-0 halt convention. |
 | `arm26_ext` | `emu/tests/arm26_ext_test` | WP6 core extensions (**15 assertions**): group-011 register-offset LDR/STR, ARMv4 halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc`, undefined-space traps. |
 | `mmio` | `emu/tests/mmio_test` | WP2: the device registry routes rd8/wr8/rd32/wr32, the CPU reaches MMIO devices through the bus, unmapped accesses are safe open-bus, region priority, and the flat-RAM path is unaffected. |
-| `machine` | `emu/tests/machine_test` | WP3: a hand-built dummy ROM boots the Archimedes base machine, reads/writes emulated memory, receives IOC timer IRQs, and an IRQ-driven loop runs **1,000,000 cycles without lockup**; plus VIDC framebuffer rendering and the IOC keyboard path. |
+| `machine` | `emu/tests/machine_test` | WP3/WP4: a hand-built dummy ROM boots the Archimedes base machine through the MEMC CAM walk, reads/writes emulated memory, receives IOC timer, VIDC-flyback (vsync) and KART keyboard IRQs, and an IRQ-driven loop runs **1,000,000 cycles without lockup**; plus ROM-window mirroring, VIDC framebuffer rendering and the keyboard path. |
+| `host` | `emu/tests/host_test` | WP5 host window layer (**11 assertions**): headless present/poll/quit cycle, PPM snapshot contents, host→RISC OS keymap, and `host_pump_input()` injecting KART make/break bytes into the machine. |
 
 Each suite prints `name: N passed, M failed` and exits non-zero on any
 failure; `make test` stops at the first failing suite.
@@ -121,6 +122,19 @@ ROM boot smoke test (WP4 groundwork — not part of `make test`):
 make                                   # builds emu/tools/romboot
 emu/tools/romboot roms/ROM300 5000000  # run 5M instructions, print final state
 ```
+
+Host window frontend (WP5 — not part of `make test`):
+
+```sh
+emu/tools/sophie roms/ROM300 100 --ppm /tmp/frame.ppm   # headless: PPM snapshot per frame
+make -C emu host-x11 && DISPLAY=:0 emu/tools/sophie-x11 roms/ROM300   # real X11 window
+```
+
+`sophie` boots the ROM in the Archimedes machine, renders each VIDC frame
+through the host window layer and pumps host keyboard input into the IOC
+KART. The default build is headless (PPM snapshots via `--ppm`, scripted
+input in tests); `make host-x11` adds a real X11 window backend (libX11 is
+dlopen'd at runtime, so the default build has no X11 dependency).
 
 ## 7. Repository layout
 

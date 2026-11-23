@@ -234,6 +234,24 @@ IRQ B bit 7 (Rx full) set; reading KART clears Rx-full and pops the next
 queued byte (keyboard make/break protocol: press = keycode, release =
 keycode|0x80). Queuing a byte updates the CPU IRQ line immediately.
 
+### 4.5 Host window layer (`host/`, WP5)
+
+Backend interface (`host/host.h`): `host_open/host_present/host_poll/
+host_should_quit/host_close` present a 32bpp 0xRRGGBB framebuffer and deliver
+key events; `host_pump_input()` injects them into the machine's KART as
+RISC OS low-level key numbers (make = key, break = key|0x80) via
+`ioc_key_press`/`ioc_key_release`. `host_key_to_riscos()` maps host key
+codes (ASCII + `HOST_KEY_*` specials) to key numbers following the A3000
+keyboard matrix layout (key = (column << 4) | row).
+
+Two backends: `host_headless.c` (default; PPM snapshots via
+`host_headless_set_ppm`, scripted input via `host_headless_push_key` — used
+by CI and tests) and `host_x11.c` (real X11 window, libX11 via dlopen so the
+default build has no X11 dependency; build with `make host-x11`, used when
+`DISPLAY` is set). `tools/sophie.c` is the frontend: boot a ROM, render each
+VIDC frame (1024x768, 160000 cycles/frame at 8 MHz/50 Hz), present, pump
+input.
+
 ## 5. Tests (`emu/tests/`)
 
 - `arm26_test.c` — the 42-assertion suite transplanted verbatim from spec
@@ -252,9 +270,13 @@ keycode|0x80). Queuing a byte updates the CPU IRQ line immediately.
   is checked end to end (see §8).
 - `bench.c` — throughput benchmark, mirrored by `emu/ref/bench.mjs`.
 - `test.h` — shared `check()` harness and the `Rig` (CPU + flat-RAM bus).
+- `host_test.c` — WP5 host layer tests (headless backend cycle, PPM pixels,
+  keymap, KART injection via `host_pump_input`).
 - `../tools/romboot.c` — WP4 smoke tool (not in `make test`): loads a ROM
   image from `roms/` into the Archimedes machine and runs N instructions,
   printing final PC/mode/MEMC/bus stats.
+- `../tools/sophie.c` — WP5 frontend (not in `make test`): boots a ROM and
+  presents VIDC frames through the host window layer with keyboard input.
 
 Run everything with `make test`; benchmark with `make bench`.
 
@@ -314,6 +336,7 @@ Remaining known limitations:
 | `arm26_test`: swi-*, rti-*, undef-*, irq-*, teqp-usr | exception entry, banking, CPSR restore, mode switch (§2, §9) |
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
+| `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
 | `machine_test` (18 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3/WP4) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 

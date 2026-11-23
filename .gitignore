@@ -7,6 +7,9 @@ emu/tests/mmio_test
 emu/tests/machine_test
 emu/tests/bench
 emu/tools/romboot
+emu/tools/sophie
+emu/tools/sophie-x11
+emu/tests/host_test
 
 # local ROM image working copies (runtime data; never commit — see README/NOTICE)
 roms/
