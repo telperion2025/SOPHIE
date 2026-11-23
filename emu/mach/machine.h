@@ -4,7 +4,8 @@
  * Memory map (32MB logical space, Acorn Archimedes A3xx/A4xx layout):
  *   0x00000000-0x01FFFFFF  logical window via MEMC (boot ROM latched at
  *                          reset; CAM-walked to DRAM after the CAM is set up)
- *   0x02000000-0x02FFFFFF  physical DRAM window (direct alias)
+ *   0x02000000-...       physical DRAM window: installed RAM only
+ *                          (0x02000000+ram_size onward is open bus)
  *   0x03000000-0x031FFFFF  podule/expansion space (stub)
  *   0x03200000-0x033FFFFF  IOC (registers at low 0x80, 1MHz bus above 0x10000;
  *                          peripheral 5 at 0x03250000 holds the floppy
@@ -38,7 +39,8 @@
 #define MACH_LOGICAL_BASE 0x00000000u
 #define MACH_LOGICAL_SIZE 0x02000000u
 #define MACH_PHYS_BASE    0x02000000u
-#define MACH_PHYS_SIZE    0x01000000u
+/* the physical DRAM window decodes only the installed RAM (up to 16MB);
+ * 0x02000000+ram_size .. 0x02FFFFFF is open bus */
 #define MACH_PODULE_BASE  0x03000000u
 #define MACH_PODULE_SIZE  0x00200000u
 #define MACH_ROM_BASE     0x03800000u

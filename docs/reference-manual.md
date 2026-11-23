@@ -129,7 +129,7 @@ ignored; both are counted in `bus.unmapped_rd`/`unmapped_wr`.
 | Address range | Region |
 | --- | --- |
 | 0x00000000–0x01FFFFFF | logical window via MEMC — **boot ROM latched at reset**, then CAM-walked to physical DRAM |
-| 0x02000000–0x02FFFFFF | physical DRAM window (direct alias, `is_ram`) |
+| 0x02000000–(0x02000000+ram_size) | physical DRAM window (`is_ram`, direct alias); beyond installed RAM up to 0x02FFFFFF reads as open bus (0xFF), writes are dropped |
 | 0x03000000–0x031FFFFF | podule/expansion space (stub, reads 0xFF) |
 | 0x03200000–0x033FFFFF | IOC (registers at low 0x80, mirrored; 1 MHz peripheral bus at +0x10000: peripheral 5 at 0x03250000 holds the floppy latches, the WD1772 block sits at 0x03310000; other blocks stub) |
 | 0x03250018 | floppy latch B (bit 1 DDEN, bit 3 master reset, active low) |
@@ -388,9 +388,12 @@ Remaining known limitations:
   discards data, so real-ROM boot still stops short of the desktop (WP7/M3
   continue: RISC OS 3.00 POSTs and idles in its OS loop without probing the
   floppy. CMOS/RTC (PCF8583) is now modelled (§4.4a) and RISC OS 3.00 POST
-  passes its configuration stage; the boot still stops in POST's long RAM
-  test, whose real-hardware exit relies on MEMC data-abort behaviour at the
-  supervisor-only I/O window that this tier does not model (M3 continues).
+  passes its configuration stage. The physical DRAM window decodes only the
+  installed RAM (open bus beyond), which removed the POST reboot crash;
+  POST's long RAM test still derails the boot because its fill wraps the
+  26-bit address space over the test stub itself — on real hardware that
+  path is cut short by MEMC data-abort behaviour at the supervisor-only I/O
+  window, which this tier does not model (M3 continues: data-abort model).
 - `SWI 0` halt convention (test harness only).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`

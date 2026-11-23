@@ -98,7 +98,7 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     mem_region_add(&m->bus, &m->r_logical);
 
     /* physical DRAM window: flat-array fast path over the same buffer */
-    region_init(&m->r_phys, MACH_PHYS_BASE, MACH_PHYS_SIZE, m, NULL, NULL, NULL, NULL);
+    region_init(&m->r_phys, MACH_PHYS_BASE, ram_size, m, NULL, NULL, NULL, NULL);
     m->r_phys.is_ram = 1;
     m->r_phys.ram = ram;
     m->r_phys.ram_mask = m->ram_mask;
