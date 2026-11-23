@@ -12,10 +12,10 @@
 
 /* ---------- memory ---------- */
 
-uint8_t arm26_rd8(Arm26 *cpu, uint32_t a)  { return mem_rd8(cpu->mem, a); }
-void    arm26_wr8(Arm26 *cpu, uint32_t a, uint8_t v)  { mem_wr8(cpu->mem, a, v); }
-uint32_t arm26_rd32(Arm26 *cpu, uint32_t a) { return mem_rd32(cpu->mem, a); }
-void    arm26_wr32(Arm26 *cpu, uint32_t a, uint32_t v) { mem_wr32(cpu->mem, a, v); }
+uint8_t arm26_rd8(Arm26 *cpu, uint32_t a)  { return mem_rd8(cpu->mem, a & ADDR_MASK); }
+void    arm26_wr8(Arm26 *cpu, uint32_t a, uint8_t v)  { mem_wr8(cpu->mem, a & ADDR_MASK, v); }
+uint32_t arm26_rd32(Arm26 *cpu, uint32_t a) { return mem_rd32(cpu->mem, a & ADDR_MASK); }
+void    arm26_wr32(Arm26 *cpu, uint32_t a, uint32_t v) { mem_wr32(cpu->mem, a & ADDR_MASK, v); }
 
 void arm26_load_program(Arm26 *cpu, const uint32_t *words, size_t n, uint32_t base)
 {
@@ -111,6 +111,16 @@ static void set_reg(Arm26 *cpu, int i, uint32_t v, int bankSel)
     if (i == 15) return; /* r15 writes go through the _writePC paths */
     if (bankSel && i >= 8 && i <= 14) { *bank_cell(cpu, MODE_USR, i) = v; return; }
     cpu->r[i] = v;
+}
+
+/* r15 as a memory base (first operand of LDR/STR/LDM/STM/SWP): on 26-bit
+ * ARM the PSR bits are supplied as zero when r15 is the first operand, so
+ * the base address is PC+8, word aligned. (Deviation from the JS reference,
+ * which supplies the full r15 here; see docs/reference-manual.md section 7.) */
+static uint32_t base_reg(Arm26 *cpu, int rn, uint32_t a)
+{
+    if (rn == 15) return (a + 8) & PC_MASK;
+    return cpu->r[rn];
 }
 
 /* MOVS-style r15 write from a logical ALU result: full CPSR replace (if priv) */
@@ -308,7 +318,7 @@ static void swp(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     int B = (ins >> 22) & 1;
     int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF, rm = ins & 0xF;
-    uint32_t addr = get_reg(cpu, rn, a, 0);
+    uint32_t addr = base_reg(cpu, rn, a);
     uint32_t old;
     if (B) {
         old = arm26_rd8(cpu, addr);
@@ -409,7 +419,7 @@ static void single_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     int P = (ins >> 24) & 1, U = (ins >> 23) & 1, B = (ins >> 22) & 1;
     int W = (ins >> 21) & 1, L = (ins >> 20) & 1;
     int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF;
-    uint32_t base = get_reg(cpu, rn, a, 0);
+    uint32_t base = base_reg(cpu, rn, a);
 
     int32_t offset;
     if ((ins >> 25) & 1) { /* register offset, through the shifter (imm field = shift) */
@@ -455,7 +465,7 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     int count = 0;
     for (int i = 0; i < 16; i++) if (list & (1u << i)) count++;
 
-    uint32_t base = get_reg(cpu, rn, a, 0);
+    uint32_t base = base_reg(cpu, rn, a);
     /* ARM rule for all forms: lowest-numbered register <-> lowest address. */
     uint32_t delta;
     if (U) delta = P ? 4u : 0u;
@@ -493,7 +503,7 @@ static void halfword_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     int W = (ins >> 21) & 1, L = (ins >> 20) & 1;
     int S = (ins >> 6) & 1, H = (ins >> 5) & 1;
     int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF;
-    uint32_t base = get_reg(cpu, rn, a, 0);
+    uint32_t base = base_reg(cpu, rn, a);
 
     int32_t offset;
     if (I) offset = (int32_t)(((ins >> 4) & 0xF0u) | (ins & 0xFu)); /* immHi:immLo */

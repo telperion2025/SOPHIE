@@ -44,6 +44,9 @@
 #define MODE_SVC 3u
 
 #define PC_MASK 0x03FFFFFCu
+/* 26-bit CPU: the address bus carries 26 bits, so flag bits read from r15
+ * never reach memory decoding. Core accessors mask with ADDR_MASK. */
+#define ADDR_MASK 0x03FFFFFFu
 
 #define VEC_RESET 0x00u
 #define VEC_UNDEF 0x04u

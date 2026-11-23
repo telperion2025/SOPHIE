@@ -105,13 +105,14 @@ void vidc_render(Vidc *vidc, mem_bus *bus, uint32_t *fb, int fb_w, int fb_h)
     int xchar_size = 1 << (3 - bpp);
     const uint32_t pen_mask[4] = { 1, 3, 0xF, 0xFF };
     const uint32_t pen_byte_size[4] = { 1, 2, 4, 1 };
-    uint32_t video_start = vidc->mach->memc.regs[MEMC_VIDSTART_OFF >> 2];
+    /* video DMA fetches from the physical DRAM window at vidstart */
+    uint32_t video_base = MEMC_PHYS_BASE + vidc->mach->memc.vidstart;
 
     for (int srcy = 0; srcy < ysize; srcy++) {
         int dsty = (srcy + ystart) << vidc->interlace;
         if (dsty < 0 || dsty >= fb_h) continue;
         for (int srcx = 0; srcx < chars_per_line; srcx++) {
-            uint32_t pen = mem_rd8(bus, video_start + (uint32_t)(srcx + srcy * chars_per_line));
+            uint32_t pen = mem_rd8(bus, video_base + (uint32_t)(srcx + srcy * chars_per_line));
             int dstx = srcx * xchar_size + xstart;
             for (int xi = 0; xi < xchar_size; xi++) {
                 if (dstx + xi < 0 || dstx + xi >= fb_w) continue;

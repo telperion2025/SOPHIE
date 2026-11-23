@@ -6,40 +6,6 @@
 
 #include <string.h>
 
-/* ---------- logical window (MEMC-translated) ---------- */
-
-static uint8_t mach_logical_rd8(void *ctx, uint32_t addr)
-{
-    Machine *m = ctx;
-    if (m->memc.rom_mapped)
-        return addr < m->rom_size ? m->rom[addr] : 0xFF;
-    return addr < m->ram_size ? m->ram[addr] : 0xFF;
-}
-
-static void mach_logical_wr8(void *ctx, uint32_t addr, uint8_t v)
-{
-    Machine *m = ctx;
-    /* stores always land in DRAM (the ROM reset map is read-only in effect) */
-    if (addr < m->ram_size)
-        m->ram[addr] = v;
-}
-
-static uint32_t mach_logical_rd32(void *ctx, uint32_t addr)
-{
-    return (uint32_t)mach_logical_rd8(ctx, addr)
-         | ((uint32_t)mach_logical_rd8(ctx, addr + 1) << 8)
-         | ((uint32_t)mach_logical_rd8(ctx, addr + 2) << 16)
-         | ((uint32_t)mach_logical_rd8(ctx, addr + 3) << 24);
-}
-
-static void mach_logical_wr32(void *ctx, uint32_t addr, uint32_t v)
-{
-    mach_logical_wr8(ctx, addr, (uint8_t)v);
-    mach_logical_wr8(ctx, addr + 1, (uint8_t)(v >> 8));
-    mach_logical_wr8(ctx, addr + 2, (uint8_t)(v >> 16));
-    mach_logical_wr8(ctx, addr + 3, (uint8_t)(v >> 24));
-}
-
 /* ---------- podule space stub ---------- */
 
 static uint8_t podule_rd8(void *ctx, uint32_t addr)
@@ -58,13 +24,9 @@ static void podule_wr8(void *ctx, uint32_t addr, uint8_t v)
 static uint8_t mach_rom_rd8(void *ctx, uint32_t addr)
 {
     Machine *m = ctx;
+    m->memc.latchrom = 0; /* any high-space access drops the boot-ROM latch */
     uint32_t off = addr - MACH_ROM_BASE;
     return off < m->rom_size ? m->rom[off] : 0xFF;
-}
-
-static void mach_rom_wr8(void *ctx, uint32_t addr, uint8_t v)
-{
-    (void)ctx; (void)addr; (void)v; /* ROM is read-only */
 }
 
 static uint32_t mach_rom_rd32(void *ctx, uint32_t addr)
@@ -75,9 +37,21 @@ static uint32_t mach_rom_rd32(void *ctx, uint32_t addr)
          | ((uint32_t)mach_rom_rd8(ctx, addr + 3) << 24);
 }
 
+/* Writes into the ROM window program the MEMC CAM (page registers). */
+static void mach_rom_wr8(void *ctx, uint32_t addr, uint8_t v)
+{
+    Machine *m = ctx;
+    (void)addr;
+    m->memc.latchrom = 0;
+    memc_page_w(&m->memc, ((uint32_t)v << 24) | 0x00FFFFFFu);
+}
+
 static void mach_rom_wr32(void *ctx, uint32_t addr, uint32_t v)
 {
-    (void)ctx; (void)addr; (void)v;
+    Machine *m = ctx;
+    (void)addr;
+    m->memc.latchrom = 0;
+    memc_page_w(&m->memc, v);
 }
 
 /* ---------- init ---------- */
@@ -114,8 +88,8 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     vidc_init(&m->vidc, m);
     ioc_init(&m->ioc, m);
 
-    region_init(&m->r_logical, MACH_LOGICAL_BASE, MACH_LOGICAL_SIZE, m,
-                mach_logical_rd8, mach_logical_wr8, mach_logical_rd32, mach_logical_wr32);
+    region_init(&m->r_logical, MACH_LOGICAL_BASE, MACH_LOGICAL_SIZE, &m->memc,
+                memc_logical_rd8, memc_logical_wr8, memc_logical_rd32, memc_logical_wr32);
     mem_region_add(&m->bus, &m->r_logical);
 
     /* physical DRAM window: flat-array fast path over the same buffer */

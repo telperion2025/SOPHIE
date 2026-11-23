@@ -58,6 +58,10 @@ static uint32_t A_TEQP(int rn) { return 0xE330F000u | ((uint32_t)rn << 16); }
 #define W_START  0x40u         /* byte 0x100: init code */
 #define W_IRQ    0x80u         /* byte 0x200: IRQ handler */
 #define W_FAIL   0xC0u         /* byte 0x300: fail spin */
+#define W_POOL   0xB0u         /* byte 0x2C0: literal pool */
+
+/* MEMC control word: register 7 tag 0x03600000, 32K pages (bits 3:2=3), OS mode (bit 12) */
+#define MEMC_CTRL_WORD (0x03600000u | (7u << 17) | (3u << 2) | (1u << 12))
 
 static void build_dummy_rom(uint32_t *rom)
 {
@@ -75,17 +79,23 @@ static void build_dummy_rom(uint32_t *rom)
     /* r13 = 0x00100000 (SVC stack in RAM) */
     *c++ = A_MOV_IMM(13, 1);        pc += 4;
     *c++ = A_MOV_LSL(13, 13, 20);   pc += 4;
-    /* copy vectors ROM[0..0x1C] -> logical 0x00 */
+    /* MEMC control: 32K pages + OS mode, via literal pool */
+    *c++ = A_LDR(0, 15, (ROM_BASE_ADDR + W_POOL * 4) - (pc + 8)); pc += 4; /* r0 = ctrl word */
+    *c++ = A_MOV_IMM(2, 0x36);       pc += 4;
+    *c++ = A_MOV_LSL(2, 2, 20);     pc += 4;   /* r2 = 0x03600000 */
+    *c++ = A_STR(0, 2, 0);          pc += 4;   /* write control register */
+    /* CAM: logical page 0 -> physical page 0 (data word 0); clears ROM latch */
+    *c++ = A_MOV_IMM(3, 0x38);       pc += 4;
+    *c++ = A_MOV_LSL(3, 3, 20);     pc += 4;   /* r3 = 0x03800000 (ROM window = CAM writes) */
+    *c++ = A_MOV_IMM(1, 0);         pc += 4;
+    *c++ = A_STR(1, 3, 0);          pc += 4;
+    /* copy vectors ROM[0..0x1C] -> logical 0x00 (now DRAM via the CAM) */
     *c++ = A_MOV_IMM(0, 0x38);       pc += 4;
     *c++ = A_MOV_LSL(0, 0, 20);     pc += 4;   /* r0 = 0x03800000 */
     *c++ = A_MOV_IMM(1, 0);         pc += 4;   /* r1 = 0 */
     *c++ = A_LDMIA(0, 0x03FCu);      pc += 4;   /* {r2-r9} */
     *c++ = A_STMIA(1, 0x03FCu);      pc += 4;
-    /* MEMC control write: leave ROM reset map */
-    *c++ = A_MOV_IMM(0, 0x36);       pc += 4;
-    *c++ = A_MOV_LSL(0, 0, 20);     pc += 4;   /* r0 = 0x03600000 */
-    *c++ = A_MOV_IMM(2, 1);         pc += 4;
-    *c++ = A_STR(2, 0, 0);          pc += 4;
+    rom[W_POOL] = MEMC_CTRL_WORD;
     /* memory test: store r13 at 0x1000, read back, compare */
     *c++ = A_MOV_IMM(3, 1);         pc += 4;
     *c++ = A_MOV_LSL(3, 3, 12);     pc += 4;   /* r3 = 0x1000 */
@@ -170,8 +180,10 @@ int main(void)
     /* WP3 acceptance: boot the dummy ROM, run an IRQ-driven loop 1M cycles */
     machine_run(&m, 1000000);
 
-    snprintf(det, sizeof det, "rom_mapped=%d", m.memc.rom_mapped);
-    check("memc-control-written", m.memc.rom_mapped == 0, det);
+    snprintf(det, sizeof det, "latchrom=%d pagesize=%d pages[0]=%d ctrl=%08" PRIx32,
+             m.memc.latchrom, m.memc.pagesize_idx, m.memc.pages[0], m.memc.ctrl);
+    check("memc-cam-programmed",
+          m.memc.latchrom == 0 && m.memc.pagesize_idx == 3 && m.memc.pages[0] == 0, det);
 
     uint32_t vec = mem_rd32(&m.bus, 0x18);
     uint32_t vec_expect = A_B(0x00000018u, ROM_BASE_ADDR + W_IRQ * 4);
@@ -228,7 +240,8 @@ int main(void)
     mem_wr32(&m.bus, VIDC_BASE, (0x2Bu << 24) | (30u << 14));      /* VDSR */
     mem_wr32(&m.bus, VIDC_BASE, (0x2Cu << 24) | (100u << 14));     /* VDER */
     mem_wr32(&m.bus, VIDC_BASE, (0x2Du << 24) | (190u << 14));     /* VBER */
-    mem_wr32(&m.bus, MEMC_BASE + MEMC_VIDSTART_OFF, 0x10000u);     /* video start */
+    for (uint32_t p = 0; p <= 2; p++) memc_map_page(&m.memc, p, p); /* cover logical 0x10000 */
+    mem_wr32(&m.bus, MEMC_BASE, 0x03600000u | (1u << 17) | ((0x10000u / 16) << 2)); /* video start reg = 0x10000 */
     mem_wr8(&m.bus, 0x10000u, 0x05u);                              /* first pixel byte */
 
     static uint32_t fb[400 * 300];

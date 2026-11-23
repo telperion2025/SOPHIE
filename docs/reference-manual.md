@@ -122,13 +122,13 @@ ignored; both are counted in `bus.unmapped_rd`/`unmapped_wr`.
 
 | Address range | Region |
 | --- | --- |
-| 0x00000000–0x01FFFFFF | logical window via MEMC — **ROM at reset**, identity-mapped DRAM after the control register is written |
+| 0x00000000–0x01FFFFFF | logical window via MEMC — **boot ROM latched at reset**, then CAM-walked to physical DRAM |
 | 0x02000000–0x02FFFFFF | physical DRAM window (direct alias, `is_ram`) |
 | 0x03000000–0x031FFFFF | podule/expansion space (stub, reads 0xFF) |
 | 0x03200000–0x033FFFFF | IOC (registers at low 0x80, mirrored; 1 MHz peripheral bus at +0x10000, stub) |
 | 0x03400000–0x035FFFFF | VIDC (write-only registers) |
 | 0x03600000–0x037FFFFF | MEMC registers |
-| 0x03800000–0x03BFFFFF | ROM (read-only) |
+| 0x03800000–0x03BFFFFF | ROM (reads return ROM; **writes program the MEMC CAM**) |
 
 ```c
 void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_t rom_size);
@@ -140,11 +140,29 @@ the elapsed cycles, so IRQ-driven guest loops work.
 
 ### 4.2 MEMC (`memc.[ch]`)
 
-Model v1: control register at 0x03600000+0x00 (any write leaves the ROM reset
-map — the logical window becomes identity-mapped DRAM); video DMA start
-(logical address) at +0x04. The CAM (logical→physical page map) is not
-walked yet; identity mapping covers the first `ram_size` bytes. Refined at
-WP4/WP5 against the MEMC1A datasheet.
+MEMC1A model with a real CAM walk (WP4), per the MEMC1A register/encoding
+layout (see §10 for the facts-only boundary):
+
+- **Reset latch**: `latchrom=1` — logical reads mirror the ROM window
+  (`rom[addr & 0x1FFFFF]`), writes are ignored. Any access to the ROM
+  window (a high-space access, A25 set) or any CAM page write drops the
+  latch, as on real hardware.
+- **CAM**: 0x2000 entries, one per logical page. Page size 4K/8K/16K/32K is
+  selected by control-register bits 3:2. Page entries are written by storing
+  a data-encoded word anywhere in the ROM window 0x03800000–0x03BFFFFF:
+  logical page, physical page, MEMC id and 2-bit protection level are packed
+  per page size (e.g. 4K: `11 1LLL LLLL LLLL LLAA MPPP PPPP`). Writing a page
+  first unmaps any other logical page resolving to the same physical page.
+  Protection levels are stored in `ppl[]` but **not enforced**.
+- **Logical window**: each access walks the CAM:
+  `phys = 0x02000000 | pages[addr/pagesize]*pagesize + addr%pagesize`.
+  Unmapped pages read open bus (0xFF) and ignore writes.
+- **Registers** at 0x03600000–0x037FFFFF, selected by the data tag
+  `(v & 0x03E00000) == 0x03600000`, register index in bits 19:17, value
+  `((v>>2) & 0x7FFF) * 16`: 0 video init, 1 video start, 2 video end,
+  3 cursor init, 4 sound start, 5 sound end, 6 sound pointer reset,
+  7 control (page size bits 3:2, video DMA bit 10, sound DMA bit 11,
+  OS mode bit 12).
 
 ### 4.3 VIDC (`vidc.[ch]`)
 
@@ -208,9 +226,11 @@ void ioc_key_press(Ioc *ioc, uint8_t byte);   /* KART queue */
   immediate and register forms with writeback, LDRSB/LDRSH sign extension,
   undefined halfword-space combinations, `LDR pc`.
 - `mmio_test.c` — WP2 dispatch tests (dummy MMIO device, CPU STR/LDR to the
-  device, open-bus unmapped access, region priority, RAM regression,
-  top-word byte masking).
-- `machine_test.c` — WP3 dummy-ROM acceptance (see §8).
+  device, the 26-bit CPU address-bus mask, open-bus unmapped access, region
+  priority, RAM regression, top-word byte masking).
+- `machine_test.c` — WP3/WP4 dummy-ROM acceptance: the ROM programs the MEMC
+  control register (32K pages) and the CAM from the ROM window, unlatching
+  the boot ROM, then boots from CAM-mapped DRAM (see §8).
 - `bench.c` — throughput benchmark, mirrored by `emu/ref/bench.mjs`.
 - `test.h` — shared `check()` harness and the `Rig` (CPU + flat-RAM bus).
 - `../tools/romboot.c` — WP4 smoke tool (not in `make test`): loads a ROM
@@ -237,8 +257,10 @@ Remaining known limitations:
 - StrongARM-specific writeback/timing nuances are not modeled (an
   interpreter has no cycle timing to diverge in; LDM/STM writeback follows
   the ARM ARM).
-- MEMC CAM is not walked (identity map); VIDC sound is register capture
-  only; the IOC word-read lane simplification is documented in §4.4.
+- VIDC sound is register capture only; the IOC word-read lane simplification
+  is documented in §4.4; MEMC protection levels are stored but not enforced
+  (§4.2); VIDC/IOC do not yet raise VSync/keyboard interrupts, so real-ROM
+  boot currently stops short of the desktop (WP4 continues).
 - `SWI 0` halt convention (test harness only).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
@@ -246,6 +268,18 @@ Remaining known limitations:
   zeroed high bytes there (out-of-bounds `Uint8Array` access). The C bus
   masks every byte (`mem.c`), matching real hardware; pinned by the
   `ram-top-word-masked` check in `mmio_test`.
+- Deliberate deviation toward the ARM ARM (WP4): the C core masks every CPU
+  memory address to the 26-bit address bus (`ADDR_MASK = 0x03FFFFFF`,
+  `arm26.[ch]`), so flag bits read from r15 never reach device decoding;
+  the JS reference instead wraps addresses mod `ramSize` in `rd8/wr8/rd32`
+  (WP2). Pinned by the `cpu-address-bus-26bit` check in `mmio_test`.
+- Deliberate deviation toward the ARM ARM (WP4): when r15 is the **base
+  register** of LDR/STR/LDM/STM/SWP, the C core uses PC+8 with the PSR bits
+  supplied as zero (the 26-bit ARM first-operand rule), so `LDR [pc,#imm]`
+  is word-aligned in any mode; the JS reference supplies the full r15
+  (flags|mode included) and therefore rotates such loads by the mode bits.
+  Data-processing operand reads of r15 keep the reference behaviour
+  (full flags|PC|mode). Needed for real RISC OS ROM literal pools.
 
 ## 8. Traceability matrix (test → spec)
 
@@ -258,8 +292,8 @@ Remaining known limitations:
 | `arm26_test`: swp-*, mul-42 | SWP, MUL (§2) |
 | `arm26_test`: swi-*, rti-*, undef-*, irq-*, teqp-usr | exception entry, banking, CPSR restore, mode switch (§2, §9) |
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
-| `mmio_test` (8 checks) | WP2 acceptance: registry dispatch, CPU-to-device, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
-| `machine_test` (13 checks) | WP3 acceptance: dummy-ROM boot, memory R/W, timer IRQs, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3) |
+| `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
+| `machine_test` (13 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer IRQs, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 
 The whole suite is the acceptance criterion for the future RISC-V and

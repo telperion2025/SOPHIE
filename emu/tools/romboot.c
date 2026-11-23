@@ -37,8 +37,8 @@ int main(int argc, char **argv)
     printf("ran=%" PRIu64 " cycles, halted=%d\n", m.cpu.cycles, m.cpu.halted);
     printf("pc=%08" PRIx32 " mode=%" PRIu32 " cpsr=%08" PRIx32 "\n",
            m.cpu.r[15] & PC_MASK, m.cpu.r[15] & 3, m.cpu.r[15]);
-    printf("memc: rom_mapped=%d ctrl=%08" PRIx32 " vidstart=%08" PRIx32 "\n",
-           m.memc.rom_mapped, m.memc.regs[0], m.memc.regs[MEMC_VIDSTART_OFF >> 2]);
+    printf("memc: latchrom=%d pagesize_idx=%d pages[0]=%d ctrl=%08" PRIx32 " vidstart=%08" PRIx32 "\n",
+           m.memc.latchrom, m.memc.pagesize_idx, m.memc.pages[0], m.memc.ctrl, m.memc.vidstart);
     printf("bus: unmapped rd=%" PRIu64 " wr=%" PRIu64 "\n", m.bus.unmapped_rd, m.bus.unmapped_wr);
     return 0;
 }
