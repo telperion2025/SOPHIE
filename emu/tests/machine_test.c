@@ -246,8 +246,12 @@ int main(void)
     /* VIDC vsync: program a CRTC mode (8 MHz pixel clock), then count the
      * flyback IRQs the dummy-ROM handler tallies in [0x2008] */
     mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | (2u << 2)); /* 4bpp, pixel clock 0 */
-    mem_wr32(&m.bus, VIDC_BASE, (0x20u << 24) | (100u << 14));         /* HCR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x28u << 24) | (312u << 14));         /* VCR */
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HCR)  << 24) | (100u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBSR) << 24) | (10u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBER) << 24) | (90u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VCR)  << 24) | (312u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBSR) << 24) | (5u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBER) << 24) | (300u << 14));
     uint32_t irq0 = mem_rd32(&m.bus, 0x2004);
     machine_run(&m, 500000);
     uint32_t vsc = mem_rd32(&m.bus, 0x2008);
@@ -285,17 +289,17 @@ int main(void)
     /* VIDC: program a small 4bpp mode and render a frame */
     mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | 8u);   /* bpp mode 2 (4bpp) */
     mem_wr32(&m.bus, VIDC_BASE, (0x00u << 24) | 0xF00u);           /* palette 0 = blue */
-    mem_wr32(&m.bus, VIDC_BASE, (0x05u << 24) | 0x00Fu);           /* palette 5 = red */
-    mem_wr32(&m.bus, VIDC_BASE, (0x20u << 24) | (170u << 14));     /* HCR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x22u << 24) | (50u << 14));      /* HBSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x23u << 24) | (60u << 14));      /* HDSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x24u << 24) | (140u << 14));     /* HDER */
-    mem_wr32(&m.bus, VIDC_BASE, (0x25u << 24) | (160u << 14));     /* HBER */
-    mem_wr32(&m.bus, VIDC_BASE, (0x28u << 24) | (200u << 14));     /* VCR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Au << 24) | (20u << 14));      /* VBSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Bu << 24) | (30u << 14));      /* VDSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Cu << 24) | (100u << 14));     /* VDER */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Du << 24) | (190u << 14));     /* VBER */
+    mem_wr32(&m.bus, VIDC_BASE, (0x14u << 24) | 0x00Fu);           /* palette 5 = red */
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HCR)  << 24) | (170u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBSR) << 24) | (50u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HDSR) << 24) | (60u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HDER) << 24) | (140u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBER) << 24) | (160u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VCR)  << 24) | (200u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBSR) << 24) | (20u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VDSR) << 24) | (30u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VDER) << 24) | (100u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBER) << 24) | (190u << 14));
     for (uint32_t p = 0; p <= 2; p++) memc_map_page(&m.memc, p, p); /* cover logical 0x10000 */
     mem_wr32(&m.bus, MEMC_BASE, 0x03600000u | (1u << 17) | ((0x10000u / 16) << 2)); /* video start reg = 0x10000 */
     mem_wr8(&m.bus, 0x10000u, 0x05u);                              /* first pixel byte */

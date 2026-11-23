@@ -302,7 +302,7 @@ static void multiply(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     int acc = (ins >> 21) & 1, S = (ins >> 20) & 1;
     int rd = (ins >> 16) & 0xF, rn = (ins >> 12) & 0xF;
-    int rs = (ins >> 4) & 0xF, rm = ins & 0xF;
+    int rs = (ins >> 8) & 0xF, rm = ins & 0xF;
     uint32_t result = get_reg(cpu, rm, a, 0) * get_reg(cpu, rs, a, 0); /* low 32 bits */
     if (acc) result += get_reg(cpu, rn, a, 0);
     set_reg(cpu, rd, result, 0);
@@ -388,7 +388,9 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
     int target = isCompare ? -1 : rd;
 
     if (S) {
-        if (sh.has_carry) flagsC = sh.carry != 0;
+        /* shifter carry-out feeds C only for logical ops; arithmetic
+         * ops (ADD/SUB/CMP/...) compute C/V from the operation itself */
+        if (sh.has_carry && !isArith) flagsC = sh.carry != 0;
         uint32_t f = cpu->r[15] & ~FLAG_NZCV;
         if (result & 0x80000000u) f |= FLAG_N;
         if (result == 0) f |= FLAG_Z;
@@ -402,8 +404,14 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
          * TEQP-style (TST/TEQ/logical with rd=15): the operand replaces the
          * CPSR (flags AND I/F AND mode, subject to privilege).
          * Arithmetic (SUBS pc, lr etc): NZCV from the op; I/F/mode preserved. */
-        if (isArith) write_pc_restore(cpu, cpu->r[15], 0);
-        else write_pc_logical(cpu, result);
+        if (isArith) {
+            /* ADDS/SUBS pc,...: NZCV already updated from result above;
+             * PC <- result, I/F/mode preserved. (Exception returns go via
+             * LDM^/MOVS pc,lr, which restore the full CPSR.) */
+            cpu->r[15] = (cpu->r[15] & (FLAG_NZCV | FLAG_I | FLAG_F | 3)) | (result & PC_MASK);
+        } else {
+            write_pc_logical(cpu, result);
+        }
         return;
     }
     if (target == 15) {
@@ -559,7 +567,7 @@ static void execute(Arm26 *cpu, uint32_t a, uint32_t ins)
     }
 
     /* grp === 0 / 1: data-processing space */
-    if ((ins & 0x0F000F00u) == 0x00000900u) { multiply(cpu, a, ins); return; }
+    if ((ins & 0x0FC000F0u) == 0x00000090u) { multiply(cpu, a, ins); return; } /* MUL/MLA: bits 27:22=0, bits 7:4=1001 */
     if ((ins & 0x0FB000F0u) == 0x01000090u) { swp(cpu, a, ins); return; }
     /* MRS pattern (ARMv3+; undefined on ARMv2a hardware) */
     if ((ins & 0x0FFFFFF0u) == 0x010F0000u) { exception(cpu, VEC_UNDEF, MODE_SVC, 0); return; }

@@ -56,10 +56,13 @@ instructions and taken only when the corresponding mask bit is clear.
 
 - Data processing: all 16 opcodes with the barrel shifter (LSL/LSR/ASR/ROR,
   immediate and register shifts, RRX), immediate rotate encoding, full
-  NZCV semantics; S with rd=15 implements the 26-bit CPSR-write rules:
-  logical/TEQP-style ops replace the full CPSR (privileged) via
-  `write_pc_logical`, arithmetic ops (SUBS pc, …) take NZCV from the result
-  and preserve I/F/mode via `write_pc_restore`.
+  NZCV semantics. Shifter carry-out feeds C only for **logical** ops with
+  S set; arithmetic ops (ADD/SUB/ADC/SBC/CMP/CMN/RSB/RSC) take C/V from
+  the operation itself. S with rd=15 implements the 26-bit CPSR-write
+  rules: logical/TEQP-style ops replace the full CPSR (privileged) via
+  `write_pc_logical`; arithmetic ops (`ADDS/SUBS pc, …`, e.g. the ROM's
+  `adds pc, r0, pc` veneers) write PC from the result and take NZCV from
+  it, preserving I/F/mode.
 - MUL/MLA (with S → N,Z), SWP/SWPB.
 - LDR/STR word and byte, all P/U/W combinations, immediate offset (group
   010) and register offset (group 011, bit 4 = 0); unaligned word loads
@@ -150,9 +153,9 @@ MEMC1A model with a real CAM walk (WP4), per the MEMC1A register/encoding
 layout (see §10 for the facts-only boundary):
 
 - **Reset latch**: `latchrom=1` — logical reads mirror the ROM window
-  (`rom[addr & 0x1FFFFF]`), writes are ignored. Any access to the ROM
-  window (a high-space access, A25 set) or any CAM page write drops the
-  latch, as on real hardware.
+  (`rom[addr & 0x1FFFFF]`), writes are ignored. Only a **write** to the
+  ROM window (a CAM page write) drops the latch; ROM-window reads and
+  IOC/VIDC/MEMC-register accesses leave it set, as on real hardware.
 - **CAM**: 0x2000 entries, one per logical page. Page size 4K/8K/16K/32K is
   selected by control-register bits 3:2. Page entries are written by storing
   a data-encoded word anywhere in the ROM window 0x03800000–0x03FFFFFF:
@@ -174,33 +177,38 @@ layout (see §10 for the facts-only boundary):
 
 Write-only register region at 0x03400000: a word store delivers
 `reg = v>>24, val = v & 0xFFFFFF` (byte stores replicate the byte on all
-lanes: `reg = byte, val = 0xFFFFFF`); reads return open bus. Register file
-(reg index = byte offset >> 2):
+lanes: `reg = byte, val = 0xVVVVVV`); reads return open bus. Register file
+per the VIDC1 datasheet (reg byte = `v>>24`; within each block the low two
+bits of the reg byte are ignored, index = `(reg & 0xFC) >> 2`):
 
-| Regs | Meaning |
+| Reg bytes | Meaning |
 | --- | --- |
-| 0x00–0x0F | display palette, 12-bit BGR (b=11:8, g=7:4, r=3:0); expanded to 256 8bpp entries |
-| 0x10 | border colour |
-| 0x11–0x13 | cursor palette |
-| 0x18–0x1F | stereo image |
-| 0x20–0x2F | CRTC: HCR HSWR HBSR HDSR HDER HBER HCSR HIR VCR VSWR VBSR VDSR VDER VBER VCSR VCER |
-| 0x30 | sound frequency latch (register capture only; sound is M4) |
-| 0x38 | control: bits 1:0 pixel clock, bits 3:2 bpp mode (0=1,1=2,2=4,3=8 bpp), bit 6 interlace |
+| 0x00–0x3F | display palette, 16 entries at reg `4*i`, 12-bit BGR (b=11:8, g=7:4, r=3:0); entry i also feeds 8bpp pen group `i*0x10..i*0x10+0xF0` (pixel high nibble = gun high nibble, register = low nibble) |
+| 0x40–0x4F | cursor palette, 4 entries at reg `0x40+4*i`; entry 0 (reg 0x40) doubles as the **border colour** |
+| 0x60–0x7F | stereo image, 8 channels at reg `0x60+4*c` (capture only) |
+| 0x80–0xBF | CRTC, 16 registers at reg `0x80+4*i`: HCR HSWR HBSR HDSR HDER HBER HCSR HIR VCR VSWR VBSR VDSR VDER VBER VCSR VCER |
+| 0xC0–0xC3 | sound frequency latch (register capture only; sound is M4) |
+| 0xE0–0xE3 | control: bits 1:0 pixel clock, bits 3:2 bpp mode (0=1,1=2,2=4,3=8 bpp), bit 6 interlace |
 
 `vidc_render(Vidc*, mem_bus*, uint32_t *fb, int w, int h)` decodes the CRTC
 registers with the VIDC1 arithmetic (`HCR=((v>>14)<<1)+2`, `HBSR/HBER =
 ((v>>14)<<1)+1`, `HDSR/HDER = (v>>14)*2 + xstep[bpp]` with
-`xstep={19,11,7,5}`, vertical regs `(v>>14)+1`, cursor regs masked to 10
-bits +1) and rasterises from the MEMC video-start address into a 32bpp
-0xRRGGBB framebuffer.
+`xstep={19,11,7,5}` (re-decoded when the control register changes),
+`HCSR=((v>>13)&0x7FF)+6`, vertical regs `(v>>14)+1`, `VCSR/VCER =
+((v>>14)&0x3FF)+1`) and rasterises from the MEMC video-start address into a
+32bpp 0xRRGGBB framebuffer (pen table: 8bpp pens 0x00–0xFF, display
+4bpp pens 0x100–0x10F, cursor/border pen 0x110; interlace plots each
+source row on two consecutive framebuffer rows).
 
 **Flyback (vsync) interrupt (WP4)**: `vidc_tick(vidc, cycles)` (called from
 `machine_run` alongside `ioc_tick`) counts CPU cycles per frame as
-`HCR * VCR * (interlace+1)` pixel clocks, with the pixel clock selected by
-control bits 1:0 (`{8,12,16,24}` MHz, CPU at 8 MHz). Each frame end raises
+`HCR * VCR * CPU_HZ / pixel_clock` (pixel clock `{8,12,16,24}` MHz from
+control bits 1:0, CPU at 8 MHz; e.g. HCR=1024, VCR=312 at 16 MHz is 159744
+cycles = 50 Hz). Each frame end raises
 the VIDC flyback line, which the IOC latches as **IRQ status A bit 3 (0x08,
 IR line)** — the Archimedes vsync interrupt that RISC OS's screen driver
-hooks. With no valid CRTC mode programmed (HCR/VCR < 2) no vsync fires.
+hooks. With no valid CRTC mode programmed (HCR/VCR/HBER/VBER < 2, or
+totals < border ends) no vsync fires.
 
 ### 4.4 IOC (`ioc.[ch]`)
 
@@ -226,7 +234,10 @@ clears the corresponding status bits (write-1-clear; mask 0x7C on A).
 Reset status: IRA = 0x90, IRB = 0x40, FIQ = 0x80. Timers 0/1 run at 2 MHz
 (4 CPU cycles per tick at the 8 MHz CPU clock), raise IRQ A bits 5/6 on
 underflow and reload continuously from their latches; T2/T3 are baud/KART
-clocks (no IRQ). The IRQ/FIQ lines to the CPU are `(status & mask) != 0`.
+clocks (no IRQ). Writing a timer LATCH register (base+0x0C) captures the
+current counter into the lo/hi readback bytes (base+0x00/0x04), matching
+the timed-measurement idiom RISC OS POST uses. The IRQ/FIQ lines to the CPU
+are `(status & mask) != 0`.
 
 ```c
 void ioc_tick(Ioc *ioc, Arm26 *cpu, uint32_t cycles_delta);

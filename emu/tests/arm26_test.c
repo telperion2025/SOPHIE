@@ -103,7 +103,7 @@ static void t_branch_not_taken(void)
 static void t_mul(void)
 {
     Rig g; rig_init(&g);
-    uint32_t prog[] = { 0xE3A01007u, 0xE3A02006u, 0xE0000921u }; /* MOV r1,#7; MOV r2,#6; MUL r0,r1,r2 */
+    uint32_t prog[] = { 0xE3A01007u, 0xE3A02006u, 0xE0000291u }; /* MOV r1,#7; MOV r2,#6; MUL r0,r1,r2 */
     rig_load(&g, prog, 3, 0);
     arm26_run(&g.cpu, 3);
     snprintf(det, sizeof det, "r0=%" PRIu32, g.cpu.r[0]);

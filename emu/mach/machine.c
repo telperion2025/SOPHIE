@@ -24,7 +24,6 @@ static void podule_wr8(void *ctx, uint32_t addr, uint8_t v)
 static uint8_t mach_rom_rd8(void *ctx, uint32_t addr)
 {
     Machine *m = ctx;
-    m->memc.latchrom = 0; /* any high-space access drops the boot-ROM latch */
     uint32_t off = addr - MACH_ROM_BASE;
     /* the ROM chip sees only the low address bits: the image mirrors across
      * the 8MB window (rom_size is a power of two) */

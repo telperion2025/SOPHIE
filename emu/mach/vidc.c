@@ -11,30 +11,13 @@
 
 #define VIDC_CPU_HZ 8000000u
 
+/* horizontal display decode step per bpp mode (VIDC1) */
+static const uint32_t xstep[4] = { 19, 11, 7, 5 };
+
 void vidc_init(Vidc *vidc, Machine *mach)
 {
     memset(vidc, 0, sizeof *vidc);
     vidc->mach = mach;
-    vidc->border = 0;
-}
-
-void vidc_tick(Vidc *vidc, uint32_t cycles_delta)
-{
-    static const uint32_t pixel_rate[4] = { 8000000u, 12000000u, 16000000u, 24000000u };
-    uint32_t hcr = ((vidc->regs[VIDC_REG_CRTC + VIDC_CRTC_HCR] >> 14) << 1) + 2;
-    uint32_t vcr = (vidc->regs[VIDC_REG_CRTC + VIDC_CRTC_VCR] >> 14) + 1;
-    uint32_t vlines = vcr * (uint32_t)(vidc->interlace + 1);
-    if (hcr < 2 || vlines < 2)
-        return; /* no valid mode programmed: no vsync */
-    uint64_t frame_cycles = (uint64_t)hcr * vlines * pixel_rate[vidc->pixel_clock & 3] / VIDC_CPU_HZ;
-    if (frame_cycles == 0)
-        return;
-    vidc->frame_acc += cycles_delta;
-    while (vidc->frame_acc >= frame_cycles) {
-        vidc->frame_acc -= frame_cycles;
-        if (vidc->mach != NULL)
-            ioc_flyback(&vidc->mach->ioc); /* vsync: IRQ status A bit 3 */
-    }
 }
 
 static uint32_t pal12_to_rgb(uint32_t v)
@@ -43,30 +26,96 @@ static uint32_t pal12_to_rgb(uint32_t v)
     return (r * 0x11u << 16) | (g * 0x11u << 8) | (b * 0x11u);
 }
 
+static uint32_t convert_hdisplay(Vidc *vidc, int index)
+{
+    return vidc->hraw[index] * 2 + xstep[vidc->bpp & 3];
+}
+
+static void crtc_w(Vidc *vidc, int idx, uint32_t d)
+{
+    switch (idx) {
+      case VIDC_CRTC_HCR:  vidc->crtc[idx] = ((d >> 14) << 1) + 2;   break;
+      case VIDC_CRTC_HSWR: vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_HBSR: vidc->crtc[idx] = ((d >> 14) << 1) + 1;  break;
+      case VIDC_CRTC_HDSR: vidc->hraw[0] = d >> 14;
+                           vidc->crtc[idx] = convert_hdisplay(vidc, 0); break;
+      case VIDC_CRTC_HDER: vidc->hraw[1] = d >> 14;
+                           vidc->crtc[idx] = convert_hdisplay(vidc, 1); break;
+      case VIDC_CRTC_HBER: vidc->crtc[idx] = ((d >> 14) << 1) + 1;  break;
+      case VIDC_CRTC_HCSR: vidc->crtc[idx] = ((d >> 13) & 0x7FFu) + 6; break;
+      case VIDC_CRTC_HIR:  vidc->crtc[idx] = d;                     break;
+      case VIDC_CRTC_VCR:  vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_VSWR: vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_VBSR: vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_VDSR: vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_VDER: vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_VBER: vidc->crtc[idx] = (d >> 14) + 1;         break;
+      case VIDC_CRTC_VCSR: vidc->crtc[idx] = ((d >> 14) & 0x3FFu) + 1; break;
+      case VIDC_CRTC_VCER: vidc->crtc[idx] = ((d >> 14) & 0x3FFu) + 1; break;
+      default: break;
+    }
+}
+
+static void control_w(Vidc *vidc, uint32_t d)
+{
+    vidc->pixel_clock = d & 3;
+    vidc->bpp = (d >> 2) & 3;
+    vidc->interlace = (d >> 6) & 1;
+    /* HDSR/HDER depend on the bpp mode: re-decode from the raw values */
+    vidc->crtc[VIDC_CRTC_HDSR] = convert_hdisplay(vidc, 0);
+    vidc->crtc[VIDC_CRTC_HDER] = convert_hdisplay(vidc, 1);
+}
+
 void vidc_write(Vidc *vidc, uint32_t v)
 {
     uint32_t reg = (v >> 24) & 0xFFu;
     uint32_t val = v & 0x00FFFFFFu;
-    if (reg >= 64)
-        return;
     vidc->regs[reg] = val;
 
-    if (reg <= 0x0F) {
-        /* display palette: expand into 16 8bpp entries (VIDC1 4bpp mapping) */
-        uint32_t rgb = pal12_to_rgb(val);
-        vidc->pal4[reg] = rgb;
+    if (reg < 0x40) {
+        /* display palette entry i = reg>>2 */
+        uint32_t i = reg >> 2;
+        vidc->pal[0x100 + i] = pal12_to_rgb(val);
+        /* 8bpp expansion: pens i*0x10 .. i*0x10+0xF0 */
         for (uint32_t idx = 0; idx < 0x100; idx += 0x10) {
             uint32_t b = ((val & 0x700) >> 8) | ((idx & 0x80) >> 4);
             uint32_t g = ((val & 0x030) >> 4) | ((idx & 0x60) >> 3);
-            uint32_t r = ((val & 0x007)) | ((idx & 0x10) >> 1);
-            vidc->pal8[reg + idx] = (r * 0x11u << 16) | (g * 0x11u << 8) | (b * 0x11u);
+            uint32_t r = (val & 0x007) | ((idx & 0x10) >> 1);
+            vidc->pal[i + idx] = (r * 0x11u << 16) | (g * 0x11u << 8) | (b * 0x11u);
         }
-    } else if (reg == VIDC_REG_BORDER) {
-        vidc->border = pal12_to_rgb(val);
-    } else if (reg == VIDC_REG_CONTROL) {
-        vidc->pixel_clock = val & 3;
-        vidc->bpp = (val >> 2) & 3;
-        vidc->interlace = (val >> 6) & 1;
+    } else if (reg < 0x50) {
+        /* cursor palette entry (reg-0x40)>>2; entry 0 is the border */
+        vidc->pal[0x110 + ((reg - 0x40) >> 2)] = pal12_to_rgb(val);
+    } else if (reg >= 0x80 && reg < 0xC0) {
+        crtc_w(vidc, (reg - 0x80) >> 2, val);
+    } else if (reg >= 0xE0) {
+        control_w(vidc, val);
+    }
+    /* 0x60-0x7F stereo image and 0xC0-0xC3 sound latch: capture only */
+}
+
+void vidc_tick(Vidc *vidc, uint32_t cycles_delta)
+{
+    static const uint32_t pixel_rate[4] = { 8000000u, 12000000u, 16000000u, 24000000u };
+    uint32_t hcr  = vidc->crtc[VIDC_CRTC_HCR];
+    uint32_t hbsr = vidc->crtc[VIDC_CRTC_HBSR];
+    uint32_t hber = vidc->crtc[VIDC_CRTC_HBER];
+    uint32_t vcr  = vidc->crtc[VIDC_CRTC_VCR];
+    uint32_t vbsr = vidc->crtc[VIDC_CRTC_VBSR];
+    uint32_t vber = vidc->crtc[VIDC_CRTC_VBER];
+    /* sanity: a valid mode has total >= border end >= border start */
+    if (hcr < 2 || vcr < 2 || hber < 2 || vber < 2)
+        return; /* no valid mode programmed: no vsync */
+    if (hcr < hber || hber < hbsr || vber < vbsr)
+        return;
+    uint64_t frame_cycles = (uint64_t)hcr * vcr * VIDC_CPU_HZ / pixel_rate[vidc->pixel_clock & 3];
+    if (frame_cycles == 0)
+        return;
+    vidc->frame_acc += cycles_delta;
+    while (vidc->frame_acc >= frame_cycles) {
+        vidc->frame_acc -= frame_cycles;
+        if (vidc->mach != NULL)
+            ioc_flyback(&vidc->mach->ioc); /* vsync: IRQ status A bit 3 */
     }
 }
 
@@ -97,29 +146,16 @@ void vidc_wr32(void *ctx, uint32_t addr, uint32_t v)
 
 void vidc_render(Vidc *vidc, mem_bus *bus, uint32_t *fb, int fb_w, int fb_h)
 {
-    const uint32_t *c = vidc->regs + VIDC_REG_CRTC;
-    const uint32_t xstep[4] = { 19, 11, 7, 5 };
+    const uint32_t *c = vidc->crtc;
     int bpp = vidc->bpp;
 
-    /* decode CRTC registers (VIDC1 arithmetic) */
-    uint32_t hcr  = ((c[VIDC_CRTC_HCR] >> 14) << 1) + 2;
-    uint32_t hbsr = ((c[VIDC_CRTC_HBSR] >> 14) << 1) + 1;
-    uint32_t hdsr = ((c[VIDC_CRTC_HDSR] >> 14) * 2) + xstep[bpp];
-    uint32_t hder = ((c[VIDC_CRTC_HDER] >> 14) * 2) + xstep[bpp];
-    uint32_t hber = ((c[VIDC_CRTC_HBER] >> 14) << 1) + 1;
-    uint32_t vcr  = (c[VIDC_CRTC_VCR] >> 14) + 1;
-    uint32_t vbsr = (c[VIDC_CRTC_VBSR] >> 14) + 1;
-    uint32_t vdsr = (c[VIDC_CRTC_VDSR] >> 14) + 1;
-    uint32_t vder = (c[VIDC_CRTC_VDER] >> 14) + 1;
-    (void)hcr; (void)vcr; (void)hber;
-
     for (int i = 0; i < fb_w * fb_h; i++)
-        fb[i] = vidc->border;
+        fb[i] = vidc->pal[0x110]; /* border */
 
-    int xstart = (int)(hdsr - hbsr);
-    int ystart = (int)(vdsr - vbsr);
-    int xsize = (int)(hder - hdsr);
-    int ysize = (int)(vder - vdsr);
+    int xstart = (int)(c[VIDC_CRTC_HDSR] - c[VIDC_CRTC_HBSR]);
+    int ystart = (int)(c[VIDC_CRTC_VDSR] - c[VIDC_CRTC_VBSR]);
+    int xsize = (int)(c[VIDC_CRTC_HDER] - c[VIDC_CRTC_HDSR]);
+    int ysize = (int)(c[VIDC_CRTC_VDER] - c[VIDC_CRTC_VDSR]);
     if (xsize <= 0 || ysize <= 0)
         return;
 
@@ -132,15 +168,18 @@ void vidc_render(Vidc *vidc, mem_bus *bus, uint32_t *fb, int fb_w, int fb_h)
 
     for (int srcy = 0; srcy < ysize; srcy++) {
         int dsty = (srcy + ystart) << vidc->interlace;
-        if (dsty < 0 || dsty >= fb_h) continue;
         for (int srcx = 0; srcx < chars_per_line; srcx++) {
             uint32_t pen = mem_rd8(bus, video_base + (uint32_t)(srcx + srcy * chars_per_line));
             int dstx = srcx * xchar_size + xstart;
             for (int xi = 0; xi < xchar_size; xi++) {
                 if (dstx + xi < 0 || dstx + xi >= fb_w) continue;
                 uint32_t dot = (pen >> (xi * pen_byte_size[bpp])) & pen_mask[bpp];
-                uint32_t rgb = (bpp == 3) ? vidc->pal8[dot] : vidc->pal4[dot & 0xF];
-                fb[dsty * fb_w + dstx + xi] = rgb;
+                uint32_t idx = (bpp == 3) ? dot : 0x100u + dot;
+                for (int line = 0; line <= vidc->interlace; line++) {
+                    int row = dsty + line;
+                    if (row < 0 || row >= fb_h) continue;
+                    fb[row * fb_w + dstx + xi] = vidc->pal[idx];
+                }
             }
         }
     }

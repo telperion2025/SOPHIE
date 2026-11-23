@@ -141,6 +141,12 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
             uint32_t base = IOC_T0_LO + (uint32_t)t * 0x10;
             if (r == base + 0x08) /* GO: load counter from latch */
                 ioc->timer_cnt[t] = (uint32_t)ioc->regs[base + 4] << 8 | ioc->regs[base];
+            else if (r == base + 0x0C) {
+                /* LATCH write: capture the current counter for readback */
+                ioc->regs[base] = (uint8_t)(ioc->timer_cnt[t] & 0xFF);
+                ioc->regs[base + 4] = (uint8_t)((ioc->timer_cnt[t] >> 8) & 0xFF);
+                break;
+            }
             ioc->timer_latch[t] = (uint32_t)ioc->regs[base + 4] << 8 | ioc->regs[base];
             break;
         }
