@@ -59,10 +59,13 @@ instructions and taken only when the corresponding mask bit is clear.
   NZCV semantics. Shifter carry-out feeds C only for **logical** ops with
   S set; arithmetic ops (ADD/SUB/ADC/SBC/CMP/CMN/RSB/RSC) take C/V from
   the operation itself. S with rd=15 implements the 26-bit CPSR-write
-  rules: logical/TEQP-style ops replace the full CPSR (privileged) via
+  rules: logical ops (`MOVS pc, ..`) replace the full CPSR (privileged) via
   `write_pc_logical`; arithmetic ops (`ADDS/SUBS pc, …`, e.g. the ROM's
   `adds pc, r0, pc` veneers) write PC from the result and take NZCV from
-  it, preserving I/F/mode.
+  it, preserving I/F/mode. The compare "P" forms (`TSTP/TEQP/CMPP/CMNP` -
+  TST/TEQ/CMP/CMN with rd=15 and S=1) instead load the CPSR from the ALU
+  result and never write the PC (the ROM relies on this: `teq lr,#0`
+  with a CPSR image in lr, e.g. the I2C bitbang at ROM300 0x03802a50).
 - MUL/MLA (with S → N,Z), SWP/SWPB.
 - LDR/STR word and byte, all P/U/W combinations, immediate offset (group
   010) and register offset (group 011, bit 4 = 0); unaligned word loads
@@ -220,8 +223,8 @@ little-endian from byte reads (documented simplification).
 
 | Byte offset | Register |
 | --- | --- |
-| 0x00 | CONTROL (GPIO C0–C5, IR/IF lines) |
-| 0x04 | KART keyboard data (read clears Rx-full, pops the key queue) |
+| 0x00 | CONTROL (GPIO C0–C5, IR/IF lines; C0=SDA, C1=SCL to the PCF8583 — §4.4a) |
+| 0x04 | KART (read clears Rx-full and pops the queue; write starts Tx and clears Tx-empty until the shift register drains) |
 | 0x10 / 0x14 / 0x18 | IRQ_STATUS_A / IRQ_REQUEST_A (write-1-clear, mask 0x7C) / IRQ_MASK_A |
 | 0x20 / 0x24 / 0x28 | IRQ_STATUS_B / IRQ_REQUEST_B / IRQ_MASK_B |
 | 0x30 / 0x34 / 0x38 | FIQ_STATUS / FIQ_REQUEST / FIQ_MASK |
@@ -249,7 +252,29 @@ void ioc_key_release(Ioc *ioc, uint8_t byte);  /* KART break code (byte|0x80) */
 The KART path is a 16-byte Rx queue: a byte lands in the KART register with
 IRQ B bit 7 (Rx full) set; reading KART clears Rx-full and pops the next
 queued byte (keyboard make/break protocol: press = keycode, release =
-keycode|0x80). Queuing a byte updates the CPU IRQ line immediately.
+keycode|0x80). Queuing a byte updates the CPU IRQ line immediately. A KART
+*write* starts the transmit shift: IRQ B bit 6 (Tx empty) clears and
+re-asserts after the modelled shift-out delay (64 x 2 MHz ticks), which is
+what RISC OS POST polls (ROM300 0x03811084).
+
+#### 4.4a CMOS / RTC (PCF8583) on IOC CONTROL
+
+CONTROL bits C0/C1 are the I2C SDA/SCL lines to a PCF8583 clock/calendar
+with 240 bytes of CMOS RAM (`mach/cmos.[ch]`, slave address 0xA0). Writes
+to CONTROL forward bit 0 to `cmos_sda_w` and bit 1 to `cmos_scl_w`; reads
+return bit 0 as the open-drain SDA line (host output ANDed with the device
+output `cmos_sda_r`) and bits 1-7 as the written output latch. The device
+implements the datasheet I2C state machine (START/STOP on SDA while SCL
+high, address byte, register byte, data bytes with ACK on the 9th clock,
+read mode shifts out `data[reg++]` MSB first, mask flag in control bit 3
+for the date registers). The 256-byte file holds the clock registers at
+0x00-0x0F (control bit 7 = stop) and CMOS RAM at 0x10-0xFF, initialised
+with the standard *Configure defaults (0x30=0x20 Autoboot, 0x36=0x01,
+0x45=0x17, 0x50=0x90, 0xb4=0x24, 0xc7=0x01 one floppy, 0xd0=0x08). RISC OS
+3.00 POST bitbangs this bus (ROM300 0x38029ac) to read the configuration;
+with no device modelled the reads fail and POST sets its "CMOS unreadable"
+flag and takes a different (long-test) path, so the CMOS model is required
+for real-ROM boot to proceed past POST's configuration stage.
 
 ### 4.5 Host window layer (`host/`, WP5)
 
@@ -301,7 +326,7 @@ downward carry-fold checksums), empty "Hugo" root directory "$" in sectors
 
 ## 5. Tests (`emu/tests/`)
 
-- `arm26_test.c` — the 42-assertion suite transplanted verbatim from spec
+- `arm26_test.c` — the 45-assertion suite transplanted verbatim from spec
   Appendix B (test names match one-to-one).
 - `arm26_ext_test.c` — WP6 extension tests (15 checks): group-011
   register-offset LDR/STR incl. negative offset + writeback, LDRH/STRH
@@ -362,7 +387,10 @@ Remaining known limitations:
   (HD63463/IDE) are still stubs, and the WD1772 write-track (format) command
   discards data, so real-ROM boot still stops short of the desktop (WP7/M3
   continue: RISC OS 3.00 POSTs and idles in its OS loop without probing the
-  floppy, because the CMOS reads return 0xFF with no CMOS device modelled).
+  floppy. CMOS/RTC (PCF8583) is now modelled (§4.4a) and RISC OS 3.00 POST
+  passes its configuration stage; the boot still stops in POST's long RAM
+  test, whose real-hardware exit relies on MEMC data-abort behaviour at the
+  supervisor-only I/O window that this tier does not model (M3 continues).
 - `SWI 0` halt convention (test harness only).
 - Deliberate deviation from the JS reference at the RAM top boundary: the
   reference's `rd32/wr32` mask only byte `a`, leaving bytes `a+1..a+3`
@@ -396,7 +424,7 @@ Remaining known limitations:
 | `arm26_test`: branch-*, sum-*, halt, lsl-*, adc-*, tst-* | branches, loops, carry chains, test ops, SWI-0 halt (§9) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
-| `machine_test` (18 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models (§10 WP3/WP4) |
+| `machine_test` (21 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a) |
 | `fdc_test` (33 checks) | WP7 acceptance: WD1772 register map/status/command model, DRQ/INTRQ→IOC FIQ FH0/FH1, latches A/B, type I + read/write sector + read address + force interrupt + master reset against disc images, plus guest-code end-to-end sector read (§10 WP7; WD1772 datasheet) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |
 

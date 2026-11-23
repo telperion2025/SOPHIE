@@ -12,7 +12,7 @@ CFLAGS  ?= -O2 -std=c11 -Wall -Wextra
 CPPFLAGS = -Icore -Imach -Ihost -Itests
 
 CORE_SRC = core/arm26.c mach/mem.c
-MACH_SRC = mach/memc.c mach/vidc.c mach/ioc.c mach/fdc.c mach/disc.c mach/machine.c
+MACH_SRC = mach/memc.c mach/vidc.c mach/ioc.c mach/fdc.c mach/disc.c mach/cmos.c mach/machine.c
 HOST_SRC = host/host.c host/host_headless.c host/keymap.c
 LIB_SRC  = $(CORE_SRC) $(MACH_SRC) $(HOST_SRC)
 LIB_OBJ  = $(LIB_SRC:.c=.o)

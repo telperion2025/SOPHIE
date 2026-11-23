@@ -91,6 +91,7 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     vidc_init(&m->vidc, m);
     ioc_init(&m->ioc, m);
     fdc_init(&m->fdc, m);
+    cmos_init(&m->cmos);
 
     region_init(&m->r_logical, MACH_LOGICAL_BASE, MACH_LOGICAL_SIZE, &m->memc,
                 memc_logical_rd8, memc_logical_wr8, memc_logical_rd32, memc_logical_wr32);

@@ -81,6 +81,7 @@ typedef struct Ioc {
     uint64_t tick_acc;      /* fractional 2MHz accumulator (CPU cycles/4) */
     uint8_t  key_queue[16];
     int      key_head, key_tail;
+    uint32_t kart_tx_cnt;  /* KART transmit shift countdown; 0 = Tx empty */
     Machine *mach;
 } Ioc;
 

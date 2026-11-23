@@ -187,6 +187,63 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_SPIN;
 }
 
+/* ---------- I2C bitbang helpers over IOC CONTROL (SDA=C0, SCL=C1) ---------- */
+
+static void i2c_set(Machine *m, int sda, int scl)
+{
+    mem_wr8(&m->bus, IOC_BASE + IOC_CONTROL, (uint8_t)(0xC0u | ((scl & 1) << 1) | (sda & 1)));
+}
+
+static int i2c_sda(Machine *m)
+{
+    return mem_rd8(&m->bus, IOC_BASE + IOC_CONTROL) & 1;
+}
+
+static void i2c_start(Machine *m)
+{
+    i2c_set(m, 1, 1);
+    i2c_set(m, 0, 1); /* SDA falls while SCL high: START */
+    i2c_set(m, 0, 0);
+}
+
+static void i2c_stop(Machine *m)
+{
+    i2c_set(m, 0, 0);
+    i2c_set(m, 0, 1);
+    i2c_set(m, 1, 1); /* SDA rises while SCL high: STOP */
+}
+
+/* transmit one byte, return the ACK level sampled on the 9th clock (0=ACK) */
+static int i2c_tx(Machine *m, uint8_t b)
+{
+    for (int i = 7; i >= 0; i--) {
+        int bit = (b >> i) & 1;
+        i2c_set(m, bit, 0);
+        i2c_set(m, bit, 1);
+        i2c_set(m, bit, 0);
+    }
+    i2c_set(m, 1, 0); /* release SDA for the ACK bit */
+    i2c_set(m, 1, 1);
+    int ack = i2c_sda(m);
+    i2c_set(m, 1, 0);
+    return ack;
+}
+
+static uint8_t i2c_rx(Machine *m, int ack)
+{
+    uint8_t b = 0;
+    i2c_set(m, 1, 0);
+    for (int i = 7; i >= 0; i--) {
+        i2c_set(m, 1, 1);
+        b = (uint8_t)((b << 1) | (uint8_t)i2c_sda(m));
+        i2c_set(m, 1, 0);
+    }
+    i2c_set(m, ack ? 0 : 1, 0); /* host ACK (0) or NACK (1) */
+    i2c_set(m, ack ? 0 : 1, 1);
+    i2c_set(m, ack ? 0 : 1, 0);
+    return b;
+}
+
 int main(void)
 {
     static uint8_t ram[0x400000];   /* 4MB DRAM */
@@ -242,6 +299,35 @@ int main(void)
     uint8_t irqmask = mem_rd8(&m.bus, 0x03200000u + 0x18);
     snprintf(det, sizeof det, "IRQ_MASK_A=%" PRIx32, irqmask);
     check("ioc-irq-mask", irqmask == 0x28, det);
+
+    /* CMOS (PCF8583 at I2C 0xA0) on IOC CONTROL SDA/SCL: read the default
+     * config byte 0x30, then write/read back CMOS RAM byte 0x40 */
+    i2c_start(&m);
+    int ack1 = i2c_tx(&m, 0xA0); /* write address */
+    int ack2 = i2c_tx(&m, 0x30); /* register 0x30 */
+    snprintf(det, sizeof det, "ack=%d,%d", ack1, ack2);
+    check("cmos-addr-ack", ack1 == 0 && ack2 == 0, det);
+    i2c_start(&m);               /* repeated START */
+    i2c_tx(&m, 0xA1);            /* read address */
+    uint8_t cmos30 = i2c_rx(&m, 0);
+    i2c_stop(&m);
+    snprintf(det, sizeof det, "cmos[0x30]=%02x", cmos30);
+    check("cmos-default-config", cmos30 == 0x20, det);
+
+    i2c_start(&m);
+    i2c_tx(&m, 0xA0);
+    i2c_tx(&m, 0x40);
+    i2c_tx(&m, 0x5A);
+    i2c_stop(&m);
+    i2c_start(&m);
+    i2c_tx(&m, 0xA0);
+    i2c_tx(&m, 0x40);
+    i2c_start(&m);
+    i2c_tx(&m, 0xA1);
+    uint8_t cmos40 = i2c_rx(&m, 1); /* NACK: end of read */
+    i2c_stop(&m);
+    snprintf(det, sizeof det, "cmos[0x40]=%02x", cmos40);
+    check("cmos-write-read-ram", cmos40 == 0x5A, det);
 
     /* VIDC vsync: program a CRTC mode (8 MHz pixel clock), then count the
      * flyback IRQs the dummy-ROM handler tallies in [0x2008] */

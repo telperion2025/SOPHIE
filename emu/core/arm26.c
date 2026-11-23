@@ -401,10 +401,18 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
 
     if (rd == 15 && S) {
         /* r15 as ALU destination with S: 26-bit CPSR semantics.
-         * TEQP-style (TST/TEQ/logical with rd=15): the operand replaces the
-         * CPSR (flags AND I/F AND mode, subject to privilege).
-         * Arithmetic (SUBS pc, lr etc): NZCV from the op; I/F/mode preserved. */
-        if (isArith) {
+         * TSTP/TEQP/CMPP/CMNP (rd=15 on the compare ops): CPSR <- ALU
+         * result, PC is NOT affected (unlike MOVS pc,.. / ADDS pc,..). */
+        if (isCompare) {
+            if (arm26_mode(cpu) != MODE_USR) {
+                uint32_t pc = cpu->r[15] & PC_MASK;
+                set_mode(cpu, result & 3);
+                cpu->r[15] = (result & (FLAG_NZCV | FLAG_I | FLAG_F | 3)) | pc;
+            } else {
+                /* unprivileged: NZCV change only */
+                cpu->r[15] = (result & FLAG_NZCV) | (cpu->r[15] & (FLAG_I | FLAG_F | 3 | PC_MASK));
+            }
+        } else if (isArith) {
             /* ADDS/SUBS pc,...: NZCV already updated from result above;
              * PC <- result, I/F/mode preserved. (Exception returns go via
              * LDM^/MOVS pc,lr, which restore the full CPSR.) */

@@ -33,6 +33,7 @@
 #include "ioc.h"
 #include "fdc.h"
 #include "disc.h"
+#include "cmos.h"
 
 #define MACH_LOGICAL_BASE 0x00000000u
 #define MACH_LOGICAL_SIZE 0x02000000u
@@ -58,6 +59,7 @@ typedef struct Machine {
     Ioc      ioc;
     Fdc      fdc;
     Disc     disc[DISC_MAX_DRIVES];
+    Cmos     cmos; /* PCF8583 on IOC CONTROL GPIO 0 (SDA) / 1 (SCL) */
     mem_region r_logical, r_phys, r_podule, r_ioc, r_vidc, r_memc, r_rom;
 } Machine;
 

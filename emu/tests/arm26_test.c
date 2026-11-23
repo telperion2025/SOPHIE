@@ -334,17 +334,35 @@ static void t_irq_entry(void)
     check("irq-mode", (g.cpu.r[15] & 3) == MODE_IRQ, det);
 }
 
-/* 39. TEQP mode switch */
+/* 39. TEQP mode switch; TEQP/TSTP with rd=15 update CPSR only, never PC */
 static void t_teqp_mode_switch(void)
 {
     Rig g; rig_init(&g);
     g.cpu.r[0] = 0;
-    uint32_t prog[] = { 0xE330F000u }; /* TEQP r0,#0 */
-    rig_load(&g, prog, 1, 0);
+    uint32_t prog[] = {
+        0xE330F000u,  /* 0x00 TEQP r0,#0  -> CPSR <- r0, PC must not jump */
+        0xE3A01001u,  /* 0x04 MOV r1,#1 */
+    };
+    rig_load(&g, prog, 2, 0);
     rig_setpc(&g, 0);
     arm26_run(&g.cpu, 1);
     snprintf(det, sizeof det, "mode=%" PRIu32 " cpsr=%" PRIx32, g.cpu.r[15] & 3, g.cpu.r[15]);
     check("teqp-usr", (g.cpu.r[15] & 3) == MODE_USR, det);
+    snprintf(det, sizeof det, "pc=%08" PRIx32, g.cpu.r[15] & PC_MASK);
+    check("teqp-pc-preserved", (g.cpu.r[15] & PC_MASK) == 0x04, det);
+    arm26_run(&g.cpu, 1);
+    snprintf(det, sizeof det, "pc=%08" PRIx32 " r1=%" PRIx32, g.cpu.r[15] & PC_MASK, g.cpu.r[1]);
+    check("teqp-continues", (g.cpu.r[15] & PC_MASK) == 0x08 && g.cpu.r[1] == 1, det);
+
+    /* ROM idiom: teq lr,#0 with lr holding a CPSR image (bit27=I) */
+    Rig g2; rig_init(&g2);
+    g2.cpu.r[14] = 0x0B802AECu;
+    uint32_t prog2[] = { 0xE33EF000u, 0xE3A01001u }; /* TEQP lr,#0 ; MOV r1,#1 */
+    rig_load(&g2, prog2, 2, 0);
+    rig_setpc(&g2, 0);
+    arm26_run(&g2.cpu, 1);
+    snprintf(det, sizeof det, "pc=%08" PRIx32 " cpsr=%08" PRIx32, g2.cpu.r[15] & PC_MASK, g2.cpu.r[15]);
+    check("teqp-lr-image", (g2.cpu.r[15] & PC_MASK) == 0x04 && (g2.cpu.r[15] & FLAG_I) != 0, det);
 }
 
 /* 40/41. loop: sum 1..10 */

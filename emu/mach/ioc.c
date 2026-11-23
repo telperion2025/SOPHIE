@@ -33,6 +33,8 @@ void ioc_tick(Ioc *ioc, Arm26 *cpu, uint32_t cycles_delta)
     ioc->tick_acc += cycles_delta;
     while (ioc->tick_acc >= 4) {
         ioc->tick_acc -= 4;
+        if (ioc->kart_tx_cnt != 0 && --ioc->kart_tx_cnt == 0)
+            ioc->regs[IOC_IRQ_STATUS_B] |= IOC_IRB_KART_TX_EMPTY;
         for (int t = 0; t < 4; t++) {
             if (ioc->timer_cnt[t] == 0)
                 continue;
@@ -93,6 +95,14 @@ void ioc_key_release(Ioc *ioc, uint8_t byte)
 static uint8_t ioc_reg_read(Ioc *ioc, uint32_t off)
 {
     uint8_t r = off & 0x7F;
+    if (r == IOC_CONTROL) {
+        /* bits 1-7 loop back the output latch; bit 0 is the SDA line:
+         * open-drain, host output ANDed with the CMOS device output */
+        uint8_t v = (uint8_t)(ioc->regs[IOC_CONTROL] & 0xFEu);
+        if (ioc->mach != NULL)
+            v |= (uint8_t)((ioc->regs[IOC_CONTROL] & 1) & cmos_sda_r(&ioc->mach->cmos));
+        return v;
+    }
     if (r == IOC_IRQ_REQUEST_A)
         return (uint8_t)(ioc->regs[IOC_IRQ_STATUS_A] & ioc->regs[IOC_IRQ_MASK_A]);
     if (r == IOC_IRQ_REQUEST_B)
@@ -116,6 +126,14 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
 {
     uint8_t r = off & 0x7F;
     switch (r) {
+      case IOC_CONTROL:
+        /* GPIO C0-C5 outputs; C0=SDA and C1=SCL drive the PCF8583 */
+        ioc->regs[r] = v;
+        if (ioc->mach != NULL) {
+            cmos_sda_w(&ioc->mach->cmos, v & 1);
+            cmos_scl_w(&ioc->mach->cmos, (v >> 1) & 1);
+        }
+        break;
       case IOC_IRQ_REQUEST_A:
         ioc->regs[IOC_IRQ_STATUS_A] &= (uint8_t)~(v & 0x7C); /* write-1-clear */
         break;
@@ -131,8 +149,11 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
         ioc->regs[r] = v;
         break;
       case IOC_KART:
+        /* start shifting the byte out: Tx-empty clears and re-asserts
+         * when the (modelled) shift register has drained */
         ioc->regs[IOC_IRQ_STATUS_B] &= (uint8_t)~IOC_IRB_KART_TX_EMPTY;
         ioc->regs[IOC_KART] = v;
+        ioc->kart_tx_cnt = 64; /* ~10 bit times at 2 MHz, in CPU cycles/4 */
         break;
       default:
         if (r >= IOC_T0_LO && r <= IOC_T3_LO + 0x0C) {
