@@ -432,7 +432,8 @@ static void single_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
             uint32_t r = (addr & 3) * 8;
             v = r ? ((word >> r) | (word << (32 - r))) : word; /* unaligned load rotates so byte@addr is LSB */
         }
-        set_reg(cpu, rd, v, 0);
+        if (rd == 15) cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK); /* LDR pc: jump, flags preserved */
+        else set_reg(cpu, rd, v, 0);
     } else {
         uint32_t v = get_reg(cpu, rd, a, 0);
         if (B) arm26_wr8(cpu, addr, (uint8_t)(v & 0xFF));
@@ -485,6 +486,50 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     if (W) set_reg(cpu, rn, finalBase, 0);
 }
 
+/* ARMv4 halfword/signed transfers: cond 000 P U I W L rn rd immHi 1 S H 1 immLo/rm */
+static void halfword_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
+{
+    int P = (ins >> 24) & 1, U = (ins >> 23) & 1, I = (ins >> 22) & 1;
+    int W = (ins >> 21) & 1, L = (ins >> 20) & 1;
+    int S = (ins >> 6) & 1, H = (ins >> 5) & 1;
+    int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF;
+    uint32_t base = get_reg(cpu, rn, a, 0);
+
+    int32_t offset;
+    if (I) offset = (int32_t)(((ins >> 4) & 0xF0u) | (ins & 0xFu)); /* immHi:immLo */
+    else   offset = (int32_t)get_reg(cpu, ins & 0xF, a, 0);          /* rm */
+    if (!U) offset = -offset;
+
+    uint32_t addr = base;
+    if (P) addr = addr + (uint32_t)offset;
+
+    if (L) {
+        uint32_t v;
+        if (S == 0 && H == 1) {        /* LDRH: zero-extended halfword */
+            v = (uint32_t)arm26_rd8(cpu, addr) | ((uint32_t)arm26_rd8(cpu, addr + 1) << 8);
+        } else if (S == 1 && H == 0) { /* LDRSB: sign-extended byte */
+            v = (uint32_t)(int32_t)(int8_t)arm26_rd8(cpu, addr);
+        } else if (S == 1 && H == 1) { /* LDRSH: sign-extended halfword */
+            uint32_t h = (uint32_t)arm26_rd8(cpu, addr) | ((uint32_t)arm26_rd8(cpu, addr + 1) << 8);
+            v = (uint32_t)(int32_t)(int16_t)h;
+        } else {                      /* S=0,H=0,L=1: undefined */
+            exception(cpu, VEC_UNDEF, MODE_SVC, 0);
+            return;
+        }
+        if (rd == 15) cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK);
+        else set_reg(cpu, rd, v, 0);
+    } else {
+        if (!(S == 0 && H == 1)) {     /* only STRH exists (no STRSB/STRSH) */
+            exception(cpu, VEC_UNDEF, MODE_SVC, 0);
+            return;
+        }
+        uint32_t v = get_reg(cpu, rd, a, 0);
+        arm26_wr8(cpu, addr, (uint8_t)(v & 0xFF));
+        arm26_wr8(cpu, addr + 1, (uint8_t)((v >> 8) & 0xFF));
+    }
+    if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0);
+}
+
 static void execute(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     if (!cond_ok(cpu, ins)) return;
@@ -494,7 +539,11 @@ static void execute(Arm26 *cpu, uint32_t a, uint32_t ins)
     if (grp == 2) { single_transfer(cpu, a, ins); return; }  /* 010: LDR/STR */
     if (grp == 4) { block_transfer(cpu, a, ins); return; }   /* 100: LDM/STM */
     if (grp == 5) { branch(cpu, a, ins); return; }           /* 101: B/BL */
-    if (grp == 3 || grp == 6 || grp == 7) {                  /* 011/110/111: coproc & ARMv3 extras */
+    if (grp == 3) {                                           /* 011: LDR/STR, register offset */
+        if (((ins >> 4) & 1) == 0) { single_transfer(cpu, a, ins); return; }
+        exception(cpu, VEC_UNDEF, MODE_SVC, 0); return;      /* bit 4 = 1: undefined before ARMv5 */
+    }
+    if (grp == 6 || grp == 7) {                               /* 110/111: coprocessor & ARMv3 extras */
         exception(cpu, VEC_UNDEF, MODE_SVC, 0);
         return;
     }
@@ -504,5 +553,6 @@ static void execute(Arm26 *cpu, uint32_t a, uint32_t ins)
     if ((ins & 0x0FB000F0u) == 0x01000090u) { swp(cpu, a, ins); return; }
     /* MRS pattern (ARMv3+; undefined on ARMv2a hardware) */
     if ((ins & 0x0FFFFFF0u) == 0x010F0000u) { exception(cpu, VEC_UNDEF, MODE_SVC, 0); return; }
+    if (grp == 0 && (ins & 0x90u) == 0x90u) { halfword_transfer(cpu, a, ins); return; } /* ARMv4 halfword/signed */
     data_processing(cpu, a, ins);
 }

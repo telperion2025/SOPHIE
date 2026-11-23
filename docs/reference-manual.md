@@ -61,8 +61,15 @@ instructions and taken only when the corresponding mask bit is clear.
   `write_pc_logical`, arithmetic ops (SUBS pc, …) take NZCV from the result
   and preserve I/F/mode via `write_pc_restore`.
 - MUL/MLA (with S → N,Z), SWP/SWPB.
-- LDR/STR word and byte, all P/U/W combinations, unaligned word loads rotate
-  the aligned word by `(addr&3)*8` (ARM semantics).
+- LDR/STR word and byte, all P/U/W combinations, immediate offset (group
+  010) and register offset (group 011, bit 4 = 0); unaligned word loads
+  rotate the aligned word by `(addr&3)*8` (ARM semantics). A load to r15
+  (`LDR pc, …`) writes the PC with flags preserved — needed by real ROM
+  vector tables.
+- ARMv4 halfword/signed transfers (group 000 with bits 7:4 = 1SH1):
+  LDRH/STRH (zero-extended halfword), LDRSB, LDRSH, immediate and register
+  offset forms, with the same P/U/W writeback rules; the undefined
+  combinations (S=0,H=0 load; any S=1 store) raise UNDEF.
 - LDM/STM all four addressing modes; lowest register at lowest address;
   STM stores r15 as CPSR (`flags | pc+8 | mode`); LDM with r15 and S in a
   privileged mode restores the full CPSR; S without r15 in the list is a
@@ -196,11 +203,19 @@ void ioc_key_press(Ioc *ioc, uint8_t byte);   /* KART queue */
 
 - `arm26_test.c` — the 42-assertion suite transplanted verbatim from spec
   Appendix B (test names match one-to-one).
+- `arm26_ext_test.c` — WP6 extension tests (15 checks): group-011
+  register-offset LDR/STR incl. negative offset + writeback, LDRH/STRH
+  immediate and register forms with writeback, LDRSB/LDRSH sign extension,
+  undefined halfword-space combinations, `LDR pc`.
 - `mmio_test.c` — WP2 dispatch tests (dummy MMIO device, CPU STR/LDR to the
-  device, open-bus unmapped access, region priority, RAM regression).
+  device, open-bus unmapped access, region priority, RAM regression,
+  top-word byte masking).
 - `machine_test.c` — WP3 dummy-ROM acceptance (see §8).
 - `bench.c` — throughput benchmark, mirrored by `emu/ref/bench.mjs`.
 - `test.h` — shared `check()` harness and the `Rig` (CPU + flat-RAM bus).
+- `../tools/romboot.c` — WP4 smoke tool (not in `make test`): loads a ROM
+  image from `roms/` into the Archimedes machine and runs N instructions,
+  printing final PC/mode/MEMC/bus stats.
 
 Run everything with `make test`; benchmark with `make bench`.
 
@@ -211,18 +226,17 @@ C core ≈ 290 MIPS, JS reference ≈ 23 MIPS — the C port is ~12x faster than
 the JS reference (WP1 acceptance: within 3x) and ~20–35x faster than the
 ~8–14 MIPS of real Archimedes-era hardware (spec §2, §9).
 
-## 7. Known limitations of the v1 core (bug-compatible with the JS reference)
+## 7. Known limitations and deliberate deviations from the JS reference
 
-These match the verified JS reference (spec Appendix A) exactly; they are
-queued for the WP6 ARMv4-extension pass, which is also where the core is
-re-verified against the ARM ARM:
+The WP6 ARMv4-extension pass implemented group 011 (register-offset
+LDR/STR), the halfword/signed transfer space, and `LDR pc` — all deliberate
+deviations from the JS reference *toward* the ARM ARM (the reference shadows
+011 with UNDEF and no-ops LDR pc), pinned by `arm26_ext_test` (15 checks).
+Remaining known limitations:
 
-- Instruction group 011 (register-offset LDR/STR) currently raises UNDEF;
-  the register-offset path inside `single_transfer` is present but shadowed
-  by the group dispatch (same class of bug the spec's status log records for
-  SWI vs. the coprocessor catch). Real ARMv2 supports 011 with bit 4 = 0.
-- `LDR pc, …` (single transfer to r15) is a no-op, as in the reference;
-  block transfers and ALU writes to r15 work.
+- StrongARM-specific writeback/timing nuances are not modeled (an
+  interpreter has no cycle timing to diverge in; LDM/STM writeback follows
+  the ARM ARM).
 - MEMC CAM is not walked (identity map); VIDC sound is register capture
   only; the IOC word-read lane simplification is documented in §4.4.
 - `SWI 0` halt convention (test harness only).
@@ -237,6 +251,7 @@ re-verified against the ARM ARM:
 
 | Suite / test group | Verifies (spec reference) |
 | --- | --- |
+| `arm26_ext_test` (15 checks) | WP6: group-011 register-offset transfers, ARMv4 halfword/signed transfers, LDR pc, undefined-space traps (§10 WP6; ARM ARM) |
 | `arm26_test`: mov-imm … bic-val | data processing, shifter, flags (§2, §9; ARM ARM) |
 | `arm26_test`: str-word … strb | single transfers incl. unaligned rotation (§2) |
 | `arm26_test`: stmfd-*, ldmfd-*, stm-r15-cpsr | block transfers, stack orders, r15-as-CPSR (§2, §9) |

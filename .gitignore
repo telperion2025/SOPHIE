@@ -2,9 +2,11 @@
 *.o
 *.d
 emu/tests/arm26_test
+emu/tests/arm26_ext_test
 emu/tests/mmio_test
 emu/tests/machine_test
 emu/tests/bench
+emu/tools/romboot
 
 # local ROM image working copies (runtime data; never commit — see README/NOTICE)
 roms/

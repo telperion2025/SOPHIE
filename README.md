@@ -30,7 +30,8 @@ tested:
 | WP1 | C11 port of the `arm26` ARMv2/3 26-bit interpreter core + transplanted 42-assertion suite | **done** — `emu/core/`, `emu/tests/arm26_test.c` (42/42 pass; ~292 MIPS vs ~23 MIPS for the JS reference on the same host) |
 | WP2 | MMIO dispatch layer: device registry routing rd8/wr8/rd32/wr32 | **done** — `emu/mach/mem.[ch]`, `emu/tests/mmio_test.c` (8/8 pass) |
 | WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `emu/tests/machine_test.c` (13/13 pass) |
-| WP4–WP7 | Real ROM boot, host window layer, ARMv4 extensions, disc images | blocked on RISC OS ROM-image acquisition (see *Licensing and acquisition boundaries*) and host windowing; see spec section 10 |
+| WP6 (core part) | ARMv4 core extensions: group-011 register-offset LDR/STR, halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc` | **done** — `emu/core/arm26.c`, `emu/tests/arm26_ext_test.c` (15/15 pass); `emu/tools/romboot.c` smoke-boots real ROM images from `roms/`. Risc PC (IOMD/VIDC20) machine model: pending |
+| WP4–WP5, WP7 | Real ROM boot to desktop, host window layer, disc images | ROMs now available locally in `roms/` (dev branch carries `ROMS/`); needs fuller device models (MEMC CAM, VIDC modes, WD1772) and the host window layer; see spec section 10 |
 | M6+ | Native RISC OS-shaped desktop / module set | `native/` — not started (per spec) |
 
 ## Quick start (host build)
@@ -40,7 +41,7 @@ the JS reference suite/benchmark for comparison).
 
 ```sh
 make          # build the emulator library, tests and benchmark
-make test     # run the full test suite (arm26 42 + mmio 8 + machine 13 assertions)
+make test     # run the full test suite (arm26 42 + arm26_ext 15 + mmio 8 + machine 13 assertions)
 make bench    # C benchmark, then the JS reference benchmark if node is present
 make clean
 ```

@@ -14,13 +14,16 @@ MACH_SRC = mach/memc.c mach/vidc.c mach/ioc.c mach/machine.c
 LIB_SRC  = $(CORE_SRC) $(MACH_SRC)
 LIB_OBJ  = $(LIB_SRC:.c=.o)
 
-TESTS = tests/arm26_test tests/mmio_test tests/machine_test
+TESTS = tests/arm26_test tests/arm26_ext_test tests/mmio_test tests/machine_test
 
 .PHONY: all test bench clean
 
-all: $(TESTS) tests/bench
+all: $(TESTS) tests/bench tools/romboot
 
 tests/arm26_test: tests/arm26_test.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^
+
+tests/arm26_ext_test: tests/arm26_ext_test.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
 tests/mmio_test: tests/mmio_test.o $(LIB_OBJ)
@@ -32,13 +35,17 @@ tests/machine_test: tests/machine_test.o $(LIB_OBJ)
 tests/bench: tests/bench.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
+tools/romboot: tools/romboot.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c -o $@ $<
 
--include $(LIB_OBJ:.o=.d) $(TESTS:=.d) tests/bench.d
+-include $(LIB_OBJ:.o=.d) $(TESTS:=.d) tests/bench.d tools/romboot.d
 
 test: $(TESTS)
 	./tests/arm26_test
+	./tests/arm26_ext_test
 	./tests/mmio_test
 	./tests/machine_test
 
@@ -53,4 +60,4 @@ bench: tests/bench
 	fi
 
 clean:
-	rm -f $(LIB_OBJ) $(LIB_OBJ:.o=.d) tests/*.o tests/*.d $(TESTS) tests/bench
+	rm -f $(LIB_OBJ) $(LIB_OBJ:.o=.d) tests/*.o tests/*.d tools/*.o tools/*.d $(TESTS) tests/bench tools/romboot

@@ -62,6 +62,7 @@ This runs three suites:
 | Suite | Binary | What it proves |
 | --- | --- | --- |
 | `arm26` | `emu/tests/arm26_test` | The C core passes all **42 assertions** of the transplanted JS suite (spec Appendix B): data processing and flags, shifter carries, MUL, SWP, LDR/STR incl. unaligned-load rotation, LDM/STM all four stack orders with r15-as-CPSR stores, exception entry (SWI/IRQ/undefined), MOVS pc full-CPSR restore, TEQP mode switch, loops, SWI-0 halt convention. |
+| `arm26_ext` | `emu/tests/arm26_ext_test` | WP6 core extensions (**15 assertions**): group-011 register-offset LDR/STR, ARMv4 halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc`, undefined-space traps. |
 | `mmio` | `emu/tests/mmio_test` | WP2: the device registry routes rd8/wr8/rd32/wr32, the CPU reaches MMIO devices through the bus, unmapped accesses are safe open-bus, region priority, and the flat-RAM path is unaffected. |
 | `machine` | `emu/tests/machine_test` | WP3: a hand-built dummy ROM boots the Archimedes base machine, reads/writes emulated memory, receives IOC timer IRQs, and an IRQ-driven loop runs **1,000,000 cycles without lockup**; plus VIDC framebuffer rendering and the IOC keyboard path. |
 
@@ -113,6 +114,13 @@ repo content at release (spec section 5; see README/NOTICE for the
 development-vs-distribution policy): the WP4+ loader reads them from a local
 `roms/` directory (gitignored), e.g. `roms/ROM300` for RISC OS 3.00 or
 `roms/riscos5-5.30-pi.img` for RISC OS 5.30.
+
+ROM boot smoke test (WP4 groundwork — not part of `make test`):
+
+```sh
+make                                   # builds emu/tools/romboot
+emu/tools/romboot roms/ROM300 5000000  # run 5M instructions, print final state
+```
 
 ## 7. Repository layout
 
