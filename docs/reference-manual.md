@@ -300,6 +300,29 @@ with no device modelled the reads fail and POST sets its "CMOS unreadable"
 flag and takes a different (long-test) path, so the CMOS model is required
 for real-ROM boot to proceed past POST's configuration stage.
 
+The clock ticks: `machine_run()` feeds each batch's executed cycles to
+`cmos_tick()`, which advances the BCD hundredths register (0x01) at 100 Hz
+(80000 CPU cycles per centisecond at the 8 MHz clock) and carries through
+seconds/minutes/hours/date/month/weekday (BCD; month lengths with the leap
+rule year&3==0; year = bits 7:6 of 0x05; weekday = bits 7:5 of 0x06).
+Control bit 7 (stop) holds the counters, control bit 3 masks the
+year/weekday bits on reads of 0x05/0x06. The alarm registers 0x07-0x0F are
+stored but not driven (no alarm interrupt line is modelled).
+
+The 240-byte CMOS RAM region (0x10-0xFF) can be persisted battery-backed
+style with `cmos_save()`/`cmos_load()` — `--cmos FILE` on `sophie`/`romboot`
+loads it before the run and saves it on exit (created on first save; the
+live clock registers 0x00-0x0F are not persisted), so *Configure settings
+survive across runs. The built-in defaults above are the RISC OS 3
+*Configure map; the RISC OS PRMs note that CMOS usage changes between OS
+versions (RISC OS 2 uses a different map — PRM 5a ch. 104 defers to the
+"Non-volatile memory (CMOS RAM)" chapter for RISC OS 2/3.1), so a RISC OS
+2 install should record its own configuration in a `--cmos` file. This
+does not affect the ROM200 boot: ROM200 performs no CMOS access before
+~13.8M cycles (its first reads happen in the kernel idle loop) and the
+~15.5M-cycle soft reset is CMOS-content-independent (verified by filling
+the CMOS RAM with 0xFF).
+
 ### 4.5 Host window layer (`host/`, WP5)
 
 Backend interface (`host/host.h`): `host_open/host_present/host_poll/
@@ -420,7 +443,7 @@ Remaining known limitations:
   is documented in §4.4; MEMC protection levels are stored but not enforced
   (§4.2). VIDC flyback (vsync) and KART keyboard interrupts are delivered
   (§4.3/§4.4), and the WD1772 floppy controller with disc images is modelled
-  (§4.6, WP7) — but the full podule/1MHz bus, CMOS/RTC and hard-disc
+  (§4.6, WP7) — but the full podule/1MHz bus and hard-disc
   (HD63463/IDE) are still stubs, and the WD1772 write-track (format) command
   discards data, so real-ROM boot still stops short of the desktop (M3
   continues). **M2 is reached**: with the 26-bit r15-as-Rn PSR-zero rule and
@@ -510,7 +533,8 @@ Remaining known limitations:
 | `arm26_test`: rn15-psr-zero, rm15-keeps-psr, ldr-rd-rn-*-load-wins, swi0-vectors | 26-bit r15 operand rules (Rn zeroes PSR, Rm keeps it), LDR Rd==Rn load-wins writeback order, SWI 0 vectoring when `swi0_halt`=0 (§2.1, §2.2; Acorn PRM App. B, RISC OS PRM) |
 | `mmio_test` (9 checks) | WP2 acceptance: registry dispatch, CPU-to-device, 26-bit address-bus mask, open bus, priority, RAM regression, top-word byte masking (§10 WP2) |
 | `host_test` (11 checks) | WP5: host window layer — headless present/poll/quit, PPM snapshot contents, keymap, KART injection (§10 WP5) |
-| `machine_test` (24 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a), plus MEMC data-abort: USR-mode podule access aborts to vector 0x10 with `lr_svc`=faulting pc+8 while SVC/claimed-device/fetch accesses stay abort-free (§3) |
+| `machine_test` (25 checks) | WP3/WP4 acceptance: dummy-ROM boots through the MEMC CAM walk (control reg + CAM writes from the ROM window unlatch the boot ROM), memory R/W via CAM, timer + VIDC-flyback (frame and forced) + KART IRQs delivered, 1M-cycle no-lockup loop, MEMC/VIDC/IOC models, PCF8583 CMOS over IOC CONTROL I2C (§10 WP3/WP4, §4.4a), plus MEMC data-abort: USR-mode podule access aborts to vector 0x10 with `lr_svc`=faulting pc+8 while SVC/claimed-device/fetch accesses stay abort-free (§3) |
+| `cmos_test` (14 checks) | WP3: PCF8583 over I2C — slave-address ACK/NACK, CMOS RAM auto-increment, date mask flag, *Configure defaults, battery-backed save/load (0x10-0xFF), and the ticking BCD clock: 100 Hz centisecond carries, day/month/year and leap rollover, stop bit, guest-visible I2C reads of the clock regs (§10 WP3, §4.4a; PCF8583 datasheet) |
 | `edge_test` (31 checks) | review-pass edge battery: ARM2 corner semantics (shifter carry edges, Rs/Rn=15 rules, STM base position, LDRH Rd==Rn, UNDEF traps, exception lr offsets) and machine/bus edges (CAM aliasing, ROM mirror, open bus, DABT fetch exemption, IOC mask, VIDC mode gate) (§2, §3, §4, §7) |
 | `fdc_test` (33 checks) | WP7 acceptance: WD1772 register map/status/command model, DRQ/INTRQ→IOC FIQ FH0/FH1, latches A/B, type I + read/write sector + read address + force interrupt + master reset against disc images, plus guest-code end-to-end sector read (§10 WP7; WD1772 datasheet) |
 | `bench` vs `emu/ref/bench.mjs` | WP1 benchmark criterion (within 3x of JS) (§10 WP1) |

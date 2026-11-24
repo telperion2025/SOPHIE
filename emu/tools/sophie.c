@@ -4,10 +4,13 @@
  * keyboard input into the IOC KART.
  *
  * Usage: tools/sophie <rom-image> [max-frames] [--ppm out.ppm] [--disc N=path.adf] [--ro]
+ *                               [--cmos file]
  *   default max-frames: run until the window is closed / CPU halts
  *   --ppm: headless backend writes each presented frame as a PPM snapshot
  *   --disc N=path: attach a disc image to floppy drive N (0-3), WP7
  *   --ro: attach disc images write-protected
+ *   --cmos file: load/save the battery-backed CMOS RAM (0x10-0xFF) so
+ *   *Configure settings persist across runs (created on first save)
  *   (build with `make host-x11` for a real X11 window when DISPLAY is set)
  *
  * Not part of `make test` (needs a ROM image, which is local runtime data).
@@ -35,10 +38,13 @@ int main(int argc, char **argv)
     long max_frames = -1;
     const char *ppm = NULL;
     const char *disc_arg[4] = { NULL, NULL, NULL, NULL };
+    const char *cmos_path = NULL;
     int ro = 0;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--ppm") == 0 && i + 1 < argc)
             ppm = argv[++i];
+        else if (strcmp(argv[i], "--cmos") == 0 && i + 1 < argc)
+            cmos_path = argv[++i];
         else if (strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
             const char *spec = argv[++i];
             int drv = spec[0] - '0';
@@ -62,6 +68,8 @@ int main(int argc, char **argv)
 
     Machine m;
     machine_init(&m, ram, sizeof ram, rom, (uint32_t)rom_size);
+    if (cmos_path != NULL && cmos_load(&m.cmos, cmos_path) == 0)
+        printf("sophie: cmos ram loaded from %s\n", cmos_path);
 
     for (int d = 0; d < 4; d++) {
         if (disc_arg[d] != NULL) {
@@ -96,6 +104,8 @@ int main(int argc, char **argv)
     printf("sophie: stopped after %ld frames, pc=%08x mode=%u cycles=%llu\n",
            frame, m.cpu.r[15] & PC_MASK, m.cpu.r[15] & 3,
            (unsigned long long)m.cpu.cycles);
+    if (cmos_path != NULL && cmos_save(&m.cmos, cmos_path) == 0)
+        printf("sophie: cmos ram saved to %s\n", cmos_path);
     host_close(win);
     return 0;
 }

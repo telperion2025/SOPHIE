@@ -163,6 +163,7 @@ void machine_run(Machine *m, uint64_t n)
             ioc_tick(&m->ioc, &m->cpu, (uint32_t)did);
             vidc_tick(&m->vidc, (uint32_t)did);
             fdc_tick(&m->fdc, (uint32_t)did);
+            cmos_tick(&m->cmos, (uint32_t)did);
         }
         n -= did;
         if (did == 0)

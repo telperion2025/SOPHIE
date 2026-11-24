@@ -18,9 +18,10 @@
  *                          (reads return ROM; writes program the MEMC CAM)
  *
  * machine_run() executes instructions and advances the IOC timers, the
- * VIDC frame timer and the FDC command engine, so IRQ/FIQ-driven guest
- * loops work. Host video/input frontends (WP5) attach to vidc_render()
- * and ioc_key_press(); disc images (WP7) attach with machine_disc_attach().
+ * VIDC frame timer, the FDC command engine and the PCF8583 clock, so
+ * IRQ/FIQ-driven guest loops and the RTC work. Host video/input frontends
+ * (WP5) attach to vidc_render() and ioc_key_press(); disc images (WP7)
+ * attach with machine_disc_attach().
  *
  * Licence: Apache-2.0 (see LICENSE).
  */
@@ -75,7 +76,7 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
 int  machine_disc_attach(Machine *m, int drive, const char *path, int wprot);
 void machine_disc_detach(Machine *m, int drive);
 
-/* Run up to n instructions, ticking the IOC/VIDC/FDC between batches. */
+/* Run up to n instructions, ticking the IOC/VIDC/FDC/CMOS between batches. */
 void machine_run(Machine *m, uint64_t n);
 
 #endif /* SOPHIE_MACHINE_H */

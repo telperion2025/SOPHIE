@@ -385,6 +385,17 @@ int main(void)
     snprintf(det, sizeof det, "cmos[0x40]=%02x", cmos40);
     check("cmos-write-read-ram", cmos40 == 0x5A, det);
 
+    /* the PCF8583 clock ticks with machine_run: 1M cycles = 12 centiseconds */
+    i2c_start(&m);
+    i2c_tx(&m, 0xA0);
+    i2c_tx(&m, 0x01);
+    i2c_start(&m);
+    i2c_tx(&m, 0xA1);
+    uint8_t cmoscs = i2c_rx(&m, 1);
+    i2c_stop(&m);
+    snprintf(det, sizeof det, "cmos[0x01]=%02x (1M cyc / 80000 = 12 cs)", cmoscs);
+    check("cmos-clock-ticks", cmoscs == 0x12, det);
+
     /* VIDC vsync: program a CRTC mode (8 MHz pixel clock), then count the
      * flyback IRQs the dummy-ROM handler tallies in [0x2008] */
     mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | (2u << 2)); /* 4bpp, pixel clock 0 */

@@ -152,6 +152,19 @@ it write-protected. Supported image sizes are the ADFS S/M/L/D/E/F/G and DOS
 modelled at 0x03310000 with DRQ/INTRQ on IOC FIQ bits FH0/FH1, so guest code
 driving the controller sees a real filing-system device.
 
+Battery-backed CMOS RAM (PCF8583, reference manual §4.4a) persists via
+`--cmos FILE`: the 240-byte config region (0x10-0xFF) is loaded before the
+boot and saved on exit (the file is created on first save), so *Configure
+settings survive across runs. The PCF8583 clock registers tick at 100 Hz
+from the emulated 8 MHz clock. The built-in defaults are the RISC OS 3
+*Configure map; RISC OS 2 uses a different CMOS map, so with ROM200 point
+`--cmos` at a file the RO2 install has written itself:
+
+```sh
+emu/tools/sophie roms/ROM200 100 --ppm /tmp/frame.ppm --cmos /tmp/rom200.cmos
+emu/tools/romboot roms/ROM200 5000000 --cmos /tmp/rom200.cmos
+```
+
 ## 7. Repository layout
 
 ```text
