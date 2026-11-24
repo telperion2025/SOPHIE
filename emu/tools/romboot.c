@@ -3,8 +3,9 @@
  * machine and run N instructions, printing where the CPU got to.
  *
  * Not part of `make test` (needs a ROM image, which is local runtime data).
- * Run: ./tools/romboot [rom-image] [instructions] [--cmos file]
- *   (default roms/ROM300, 2M; --cmos loads/saves the battery-backed CMOS RAM)
+ * Run: ./tools/romboot [rom-image] [instructions] [--cmos file] [--disc N=path] [--ro]
+ *   (default roms/ROM300, 2M; --cmos loads/saves the battery-backed CMOS RAM;
+ *    --disc N=path attaches a disc image to floppy drive N (0-3), --ro write-protects)
  * Licence: Apache-2.0 (see LICENSE).
  */
 #define _POSIX_C_SOURCE 200809L
@@ -23,10 +24,22 @@ int main(int argc, char **argv)
     const char *rompath = "roms/ROM300";
     uint64_t n = 2000000;
     const char *cmos_path = NULL;
+    const char *disc_arg[4] = { NULL, NULL, NULL, NULL };
+    int ro = 0;
     int pos = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--cmos") == 0 && i + 1 < argc)
             cmos_path = argv[++i];
+        else if (strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
+            const char *spec = argv[++i];
+            int drv = spec[0] - '0';
+            if (drv >= 0 && drv < 4 && spec[1] == '=')
+                disc_arg[drv] = spec + 2;
+            else
+                fprintf(stderr, "romboot: bad --disc spec '%s' (want N=path)\n", spec);
+        }
+        else if (strcmp(argv[i], "--ro") == 0)
+            ro = 1;
         else if (pos == 0)
             rompath = argv[i], pos++;
         else if (pos == 1)
@@ -43,6 +56,15 @@ int main(int argc, char **argv)
 
     Machine m;
     machine_init(&m, ram, sizeof ram, rom, (uint32_t)rom_size);
+    for (int d = 0; d < 4; d++) {
+        if (disc_arg[d] != NULL) {
+            if (machine_disc_attach(&m, d, disc_arg[d], ro) != 0) {
+                fprintf(stderr, "cannot attach disc %d: %s\n", d, disc_arg[d]);
+                return 2;
+            }
+            printf("disc %d = %s (%s)\n", d, disc_arg[d], ro ? "ro" : "rw");
+        }
+    }
     if (cmos_path != NULL && cmos_load(&m.cmos, cmos_path) == 0)
         printf("cmos ram loaded from %s\n", cmos_path);
     machine_run(&m, n);
