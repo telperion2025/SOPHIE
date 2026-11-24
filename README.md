@@ -27,14 +27,14 @@ tested:
 
 | WP | Deliverable | Status |
 | --- | --- | --- |
-| WP1 | C11 port of the `arm26` ARMv2/3 26-bit interpreter core + transplanted 42-assertion suite | **done** — `emu/core/`, `emu/tests/arm26_test.c` (42/42 pass; ~292 MIPS vs ~23 MIPS for the JS reference on the same host) |
+| WP1 | C11 port of the `arm26` ARMv2/3 26-bit interpreter core + transplanted test suite | **done** — `emu/core/`, `emu/tests/arm26_test.c` (50/50 pass; ~200 MIPS vs ~23 MIPS for the JS reference on the same host) |
 | WP2 | MMIO dispatch layer: device registry routing rd8/wr8/rd32/wr32 | **done** — `emu/mach/mem.[ch]`, `emu/tests/mmio_test.c` (9/9 pass) |
-| WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `emu/tests/machine_test.c` (13/13 pass) |
+| WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + PCF8583 CMOS/RTC (ticking 100 Hz BCD clock, battery-backed `--cmos` persistence) + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,cmos,machine}.[ch]`, `emu/tests/machine_test.c` + `emu/tests/cmos_test.c` (27 + 14 checks pass) |
 | WP6 (core part) | ARMv4 core extensions: group-011 register-offset LDR/STR, halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc` | **done** — `emu/core/arm26.c`, `emu/tests/arm26_ext_test.c` (15/15 pass); `emu/tools/romboot.c` smoke-boots real ROM images from `roms/`. Risc PC (IOMD/VIDC20) machine model: pending |
-| WP4 (machine part) | MEMC1A CAM walk (reset ROM latch, data-encoded page entries via the ROM window, 4K/8K/16K/32K pages, control/DMA registers); VIDC flyback (vsync) IRQ via IOC IRQA bit 3; IOC KART keyboard path with make/break queue | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `machine_test` 18/18 (dummy ROM boots through the CAM; timer + vsync + keyboard IRQs verified end to end), `romboot`: ROM300 passes POST and settles in the OS idle loop (stable polling loop with IRQs flowing, 200M cycles, zero unmapped reads — spec M2); ROM200/ROM300 run from CAM-mapped DRAM; ROM window mirrors across the full 8MB (0x03800000–0x03FFFFFF) as on hardware |
-| WP5 (host layer) | Host window layer: backend interface + headless (PPM/scripted input, CI-tested) + X11 backend (dlopen, `make host-x11`); `tools/sophie` frontend boots a ROM and presents VIDC frames with keyboard input | **done** — `emu/host/`, `emu/tools/sophie.c`, `host_test` 11/11; visible desktop pending M3 (ROM300 currently idles in the OS loop with a black screen — no CMOS device yet) |
-| WP7 (disc images) | WD1772 floppy controller model at 0x03310000 (DRQ/INTRQ → IOC FIQ FH0/FH1, latches A/B at 0x03250040/0x03250018) + raw disc image backend (ADFS S/M/L/D/E/F/G, DOS 360-720K) + `mkadfs` blank-image tool + `--disc N=path` on `sophie`/`romboot` | **done** — `emu/mach/{fdc,disc}.[ch]`, `emu/tools/mkadfs.c`, `fdc_test` 33/33 incl. a guest-code end-to-end sector read; ROM300 still idles in its OS loop (no CMOS device modelled yet) — desktop boot is M3 |
-| M3 (remaining) | Real ROM boot to visible desktop | ROMs local in `roms/` (dev branch carries `ROMS/`); needs CMOS/RTC model + hard-disc so RISC OS finishes init; see spec section 10 |
+| WP4 (machine part) | MEMC1A CAM walk (reset ROM latch, data-encoded page entries via the ROM window, 4K/8K/16K/32K pages, control/DMA registers); VIDC flyback (vsync) IRQ via IOC IRQA bit 3; IOC KART keyboard path with make/break queue | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `machine_test` 27/27 (dummy ROM boots through the CAM; timer + vsync + keyboard IRQs verified end to end), `romboot`: ROM300 passes POST and settles in the OS idle loop (stable polling loop with IRQs flowing, 70M+ cycles, zero data aborts — spec M2); ROM200/ROM300 run from CAM-mapped DRAM; ROM window mirrors across the full 8MB (0x03800000–0x03FFFFFF) as on hardware |
+| WP5 (host layer) | Host window layer: backend interface + headless (PPM/scripted input, CI-tested) + X11 backend (dlopen, `make host-x11`); `tools/sophie` frontend boots a ROM and presents VIDC frames with keyboard input | **done** — `emu/host/`, `emu/tools/sophie.c`, `host_test` 11/11; visible desktop pending M3 (ROM300 currently idles in the OS loop with a black screen; CMOS/RTC is now modelled) |
+| WP7 (disc images) | WD1772 floppy controller model at 0x03310000 (DRQ/INTRQ → IOC FIQ FH0/FH1, latches A/B at 0x03250040/0x03250018) + raw disc image backend (ADFS S/M/L/D/E/F/G, DOS 360-720K) + `mkadfs` blank-image tool + `--disc N=path`/`--ro` on `sophie`/`romboot` + `--cmos FILE` battery-backed CMOS RAM | **done** — `emu/mach/{fdc,disc}.[ch]`, `emu/tools/mkadfs.c`, `fdc_test` 33/33 incl. a guest-code end-to-end sector read; ROM300 still idles in its OS loop — desktop boot is M3 |
+| M3 (remaining) | Real ROM boot to visible desktop | ROMs local in `roms/` (dev branch carries `ROMS/`); CMOS/RTC (PCF8583) is modelled (§4.4a of the reference manual); still needs the hard-disc (HD63463/IDE) model so RISC OS finishes init; the ROM200 15.5M-cycle derail is tracked as issue #3; see spec section 10 |
 | M6+ | Native RISC OS-shaped desktop / module set | `native/` — not started (per spec) |
 
 ## Quick start (host build)
@@ -44,7 +44,7 @@ the JS reference suite/benchmark for comparison).
 
 ```sh
 make          # build the emulator library, tests and benchmark
-make test     # run the full test suite (arm26 42 + arm26_ext 15 + mmio 9 + machine 18 + host 11 + fdc 33 assertions)
+make test     # run the full test suite (arm26 50 + arm26_ext 15 + mmio 9 + machine 27 + host 11 + fdc 33 + edge 31 + cmos 14 = 190 assertions)
 make bench    # C benchmark, then the JS reference benchmark if node is present
 make clean
 ```
