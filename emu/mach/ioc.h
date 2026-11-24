@@ -10,6 +10,10 @@
  *                      offsets read 0xFF (open bus) and ignore writes
  *   0x110000-0x11FFFF  WD1772 floppy controller block (0x03310000), routed
  *                      to the machine's Fdc (see fdc.h)
+ *   0x1B0000-0x1B00FF  floppy drive status/control (0x033B0000): +0x04 status
+ *                      (bits 5-6 media density, 0x60 = double density; bit 3
+ *                      write-protect; bit 4 no-disc/error; 0xFF when no disc
+ *                      is present), +0x08/+0x0C control latches (read back)
  *   other peripheral blocks: stub (reads 0xFF, writes ignored)
  * IOC registers sit on data-bus lanes D16-D23: a word store latches
  * (v>>16)&0xFF, a byte store (replicated on all lanes) latches the byte.
@@ -82,6 +86,7 @@ typedef struct Ioc {
     uint8_t  key_queue[16];
     int      key_head, key_tail;
     uint32_t kart_tx_cnt;  /* KART transmit shift countdown; 0 = Tx empty */
+    uint8_t  flatch[4];    /* 0x033B0000 block control latches (+0x04/+0x08/+0x0C) */
     Machine *mach;
 } Ioc;
 

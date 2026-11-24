@@ -240,8 +240,13 @@ totals < border ends) no vsync fires.
 ### 4.4 IOC (`ioc.[ch]`)
 
 Byte-wide register file at 0x03200000, mirrored through the region
-(`reg = (addr-0x03200000) & 0x7F`); offsets ≥ 0x10000 are the 1 MHz bus
-(stub). IOC registers sit on bus lanes D16–D23: word stores latch
+(`reg = (addr-0x03200000) & 0x7F`); offsets ≥ 0x10000 are the 1 MHz bus:
+peripheral 5 (0x03250000) hosts the floppy latches A/B (0x03250040/0x03250018)
+and monitor type (0x03250070 reads 0x0F), the WD1772 block sits at 0x03310000,
+and 0x033B0000 is the floppy drive status/control block (+0x04 status: bits 5-6
+media density, bit 3 write-protect, bit 4 no-disc — 0xFF when no disc is
+attached; +0x08/+0x0C control latches read back); other peripheral blocks are
+stubs (read 0xFF). IOC registers sit on bus lanes D16–D23: word stores latch
 `(v>>16)&0xFF`, byte stores latch the byte; word reads are composed
 little-endian from byte reads (documented simplification).
 

@@ -396,6 +396,26 @@ int main(void)
     snprintf(det, sizeof det, "cmos[0x01]=%02x (1M cyc / 80000 = 12 cs)", cmoscs);
     check("cmos-clock-ticks", cmoscs == 0x12, det);
 
+    /* floppy drive status block 0x033B0000: no disc -> 0xFF (lines idle high),
+     * disc present rw -> 0x60 (DD density bits 5-6), wprot -> bit 3 set;
+     * +0x08/+0x0C are read/write control latches */
+    {
+        uint8_t st_none = mem_rd8(&m.bus, 0x033B0004u);
+        m.disc[0].present = 1; m.disc[0].wprot = 0;
+        uint8_t st_rw = mem_rd8(&m.bus, 0x033B0004u);
+        m.disc[0].wprot = 1;
+        uint8_t st_wp = mem_rd8(&m.bus, 0x033B0004u);
+        m.disc[0].wprot = 0;
+        mem_wr8(&m.bus, 0x033B0008u, 0x03);
+        mem_wr8(&m.bus, 0x033B000Cu, 0x12);
+        uint8_t l8 = mem_rd8(&m.bus, 0x033B0008u);
+        uint8_t lc = mem_rd8(&m.bus, 0x033B000Cu);
+        snprintf(det, sizeof det, "none=%02x rw=%02x wp=%02x latch=%02x,%02x",
+                 st_none, st_rw, st_wp, l8, lc);
+        check("ioc-floppy-status", st_none == 0xFF && st_rw == 0x60 && st_wp == 0x68, det);
+        check("ioc-floppy-latch", l8 == 0x03 && lc == 0x12, det);
+    }
+
     /* VIDC vsync: program a CRTC mode (8 MHz pixel clock), then count the
      * flyback IRQs the dummy-ROM handler tallies in [0x2008] */
     mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | (2u << 2)); /* 4bpp, pixel clock 0 */

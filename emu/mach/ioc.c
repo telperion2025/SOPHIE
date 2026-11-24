@@ -179,9 +179,28 @@ static void ioc_reg_write(Ioc *ioc, uint32_t off, uint8_t v, Arm26 *cpu)
 }
 
 /* 1MHz peripheral bus: peripheral 5 (0x03250000) hosts the floppy latches;
- * the WD1772 block lives at 0x03310000. Other blocks are stubs. */
+ * the WD1772 block lives at 0x03310000; 0x033B0000 is the floppy drive
+ * status/control block. Other blocks are stubs. */
+static uint8_t ioc_floppy_status(Ioc *ioc)
+{
+    if (ioc->mach == NULL)
+        return 0xFF;
+    Disc *d = &ioc->mach->disc[ioc->mach->fdc.drive & 3];
+    if (!d->present)
+        return 0xFF; /* drive lines idle high: no disc */
+    return (uint8_t)(0x60u | (d->wprot ? 0x08u : 0x00u)); /* DD density, WP bit */
+}
+
 static uint8_t ioc_periph_rd8(Ioc *ioc, uint32_t off)
 {
+    if (off >= 0x1B0000 && off < 0x1B0100) {
+        uint32_t o = off & 0xFFu;
+        if (o == 0x04u)
+            return ioc_floppy_status(ioc);
+        if (o == 0x08u || o == 0x0Cu)
+            return ioc->flatch[o >> 2];
+        return 0xFF;
+    }
     if (off >= 0x110000 && off < 0x120000)
         return fdc_rd8(&ioc->mach->fdc, IOC_BASE + off);
     if (off >= 0x50000 && off < 0x60000) {
@@ -194,6 +213,12 @@ static uint8_t ioc_periph_rd8(Ioc *ioc, uint32_t off)
 
 static void ioc_periph_wr8(Ioc *ioc, uint32_t off, uint8_t v)
 {
+    if (off >= 0x1B0000 && off < 0x1B0100) {
+        uint32_t o = off & 0xFFu;
+        if (o == 0x08u || o == 0x0Cu)
+            ioc->flatch[o >> 2] = v;
+        return;
+    }
     if (off >= 0x110000 && off < 0x120000) {
         fdc_wr8(&ioc->mach->fdc, IOC_BASE + off, v);
         return;
