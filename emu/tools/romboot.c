@@ -17,7 +17,10 @@
 #include "machine.h"
 
 static uint8_t rom[0x400000]; /* 4MB ROM window */
-static uint8_t ram[0x400000]; /* 4MB DRAM */
+/* 1MB DRAM (A3000-class): with 4MB the RISC OS 3.00 ROM takes a reset path at
+ * ~85M cycles that remaps logical page 0 to physical page 0 (the screen buffer)
+ * and the machine marches through the zero page (issue #3 class). */
+static uint8_t ram[0x100000];
 
 int main(int argc, char **argv)
 {

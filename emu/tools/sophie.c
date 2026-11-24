@@ -29,7 +29,8 @@
 #define CYCLES_PER_FRAME 160000u /* 8 MHz / 50 Hz */
 
 static uint8_t rom[0x400000];
-static uint8_t ram[0x400000];
+/* 1MB DRAM (A3000-class); 4MB triggers the ROM300 reset-path zero-page derail */
+static uint8_t ram[0x100000];
 static uint32_t fb[FB_W * FB_H];
 
 int main(int argc, char **argv)
