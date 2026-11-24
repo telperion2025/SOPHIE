@@ -436,6 +436,16 @@ deviations from the JS reference *toward* the ARM ARM (the reference shadows
 011 with UNDEF and no-ops LDR pc), pinned by `arm26_ext_test` (15 checks).
 Remaining known limitations:
 
+- **Known issue #3 — ROM200 (RISC OS 2.00) derails at the ~15.5M-cycle boot
+  timeout**: stable SVC idle at `pc=0x0381d978` from ~1M cycles, then the ROM's
+  own T0 timeout (~1.94 s at 8 MHz) soft-breaks; the re-boot path UNDEFs at
+  `0x0380dd90` (banner print via `svc 0x20001` returning into string data) and
+  ends in a USR-mode march. The core was verified faithful
+  instruction-by-instruction, and the trigger is CMOS- and disc-independent
+  (the WD1772 is never accessed before the reset, so attached discs are inert).
+  ROM300 is unaffected (M2 met: stable kernel loop at `pc=0x03822e30`). Needs a
+  reference-emulator run (RPCEmu/Arculator) to decide whether real hardware
+  takes the same path.
 - StrongARM-specific writeback/timing nuances are not modeled (an
   interpreter has no cycle timing to diverge in; LDM/STM writeback follows
   the ARM ARM).
