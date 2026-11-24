@@ -16,8 +16,9 @@
  * ISA-portable: no endianness or alignment assumptions (PowerPC plan,
  * spec section 3).
  *
- * Test-exit convention: SWI 0 halts the run loop without an exception.
- * ROM-side code never sees it.
+ * Test-exit convention: while swi0_halt is set, SWI 0 halts the run loop
+ * without an exception (used by the test suites). The machine clears
+ * swi0_halt so a booting ROM gets a real SWI exception (SWI 0 = OS_WriteC).
  *
  * Licence: Apache-2.0 (see LICENSE). Implemented from the ARM ARM and the
  * specification only; no code derived from GPL'd emulators.
@@ -44,6 +45,9 @@
 #define MODE_SVC 3u
 
 #define PC_MASK 0x03FFFFFCu
+/* 26-bit CPU: the address bus carries 26 bits, so flag bits read from r15
+ * never reach memory decoding. Core accessors mask with ADDR_MASK. */
+#define ADDR_MASK 0x03FFFFFFu
 
 #define VEC_RESET 0x00u
 #define VEC_UNDEF 0x04u
@@ -62,7 +66,8 @@ typedef struct Arm26 {
     int      irqPending;
     int      fiqPending;
     uint64_t cycles;
-    int      halted;       /* set by SWI 0 (test-exit convention) */
+    int      halted;       /* set by SWI 0 when swi0_halt is enabled (test-exit convention) */
+    int      swi0_halt;    /* 1: SWI 0 halts instead of vectoring (tests); 0: SWI 0 = OS_WriteC (ROM) */
     mem_bus *mem;
 } Arm26;
 
@@ -71,7 +76,10 @@ void     arm26_reset(Arm26 *cpu);
 uint32_t arm26_mode(const Arm26 *cpu);
 uint32_t arm26_pc_operand(const Arm26 *cpu, uint32_t a);
 
-/* memory access through the bus */
+/* memory access through the bus; a USR-mode data access to the machine's
+ * supervisor-only I/O window (bus.io_base..) raises a data abort (VEC_DABT,
+ * LR_svc = faulting pc+8, SVC mode) after the instruction instead of
+ * reaching the device; instruction fetches are exempt */
 uint8_t  arm26_rd8(Arm26 *cpu, uint32_t addr);
 void     arm26_wr8(Arm26 *cpu, uint32_t addr, uint8_t v);
 uint32_t arm26_rd32(Arm26 *cpu, uint32_t addr);

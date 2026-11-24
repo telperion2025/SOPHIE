@@ -12,10 +12,47 @@
 
 /* ---------- memory ---------- */
 
-uint8_t arm26_rd8(Arm26 *cpu, uint32_t a)  { return mem_rd8(cpu->mem, a); }
-void    arm26_wr8(Arm26 *cpu, uint32_t a, uint8_t v)  { mem_wr8(cpu->mem, a, v); }
-uint32_t arm26_rd32(Arm26 *cpu, uint32_t a) { return mem_rd32(cpu->mem, a); }
-void    arm26_wr32(Arm26 *cpu, uint32_t a, uint32_t v) { mem_wr32(cpu->mem, a, v); }
+/* CPU accesses drive the bus abort context: user_mode reflects the current
+ * mode (MEMC1a supervisor-only I/O window aborts USR-mode data accesses)
+ * and is cleared again right after, so host/device bus users never see it.
+ * fetch is set by arm26_run only around the instruction fetch. */
+static uint32_t arm26_bus_addr(Arm26 *cpu, uint32_t a)
+{
+    cpu->mem->user_mode = (arm26_mode(cpu) == MODE_USR);
+    return a & ADDR_MASK;
+}
+
+static void arm26_bus_end(Arm26 *cpu) { cpu->mem->user_mode = 0; }
+
+uint8_t arm26_rd8(Arm26 *cpu, uint32_t a)
+{
+    a = arm26_bus_addr(cpu, a);
+    uint8_t v = mem_rd8(cpu->mem, a);
+    arm26_bus_end(cpu);
+    return v;
+}
+
+void arm26_wr8(Arm26 *cpu, uint32_t a, uint8_t v)
+{
+    a = arm26_bus_addr(cpu, a);
+    mem_wr8(cpu->mem, a, v);
+    arm26_bus_end(cpu);
+}
+
+uint32_t arm26_rd32(Arm26 *cpu, uint32_t a)
+{
+    a = arm26_bus_addr(cpu, a);
+    uint32_t v = mem_rd32(cpu->mem, a);
+    arm26_bus_end(cpu);
+    return v;
+}
+
+void arm26_wr32(Arm26 *cpu, uint32_t a, uint32_t v)
+{
+    a = arm26_bus_addr(cpu, a);
+    mem_wr32(cpu->mem, a, v);
+    arm26_bus_end(cpu);
+}
 
 void arm26_load_program(Arm26 *cpu, const uint32_t *words, size_t n, uint32_t base)
 {
@@ -53,6 +90,7 @@ void arm26_reset(Arm26 *cpu)
     cpu->fiqPending = 0;
     cpu->cycles = 0;
     cpu->halted = 0;
+    cpu->swi0_halt = 1;
 }
 
 /* ---------- register banking ---------- */
@@ -85,11 +123,14 @@ static void set_mode(Arm26 *cpu, uint32_t m)
  * banked r14_mode := current CPSR (flags | pc | old mode)
  * CPSR := (NZCV preserved) | (I set; F set for FIQ) | vector | new mode
  */
-static void exception(Arm26 *cpu, uint32_t vector, uint32_t newMode, int setF)
+static void exception(Arm26 *cpu, uint32_t vector, uint32_t newMode, int setF, int pc_off)
 {
     uint32_t oldCPSR = cpu->r[15];
     set_mode(cpu, newMode);
-    cpu->r[14] = oldCPSR;
+    /* r15's PC field is already advanced to faulting+4 at execute time;
+     * SWI/UNDEF keep lr = faulting+4, IRQ/FIQ/DABT use faulting+8 (so the
+     * handler returns with SUBS PC,lr,#4 / #8 correctly). */
+    cpu->r[14] = (oldCPSR & ~PC_MASK) | ((oldCPSR + (uint32_t)pc_off) & PC_MASK);
     uint32_t nzcv = oldCPSR & FLAG_NZCV;
     uint32_t fiqBit = setF ? FLAG_F : (oldCPSR & FLAG_F);
     cpu->r[15] = nzcv | FLAG_I | fiqBit | vector | newMode;
@@ -113,23 +154,23 @@ static void set_reg(Arm26 *cpu, int i, uint32_t v, int bankSel)
     cpu->r[i] = v;
 }
 
-/* MOVS-style r15 write from a logical ALU result: full CPSR replace (if priv) */
-static void write_pc_logical(Arm26 *cpu, uint32_t v)
+/* r15 as a memory base (first operand of LDR/STR/LDM/STM/SWP): on 26-bit
+ * ARM the PSR bits are supplied as zero when r15 is the first operand, so
+ * the base address is PC+8, word aligned. (Deviation from the JS reference,
+ * which supplies the full r15 here; see docs/reference-manual.md section 7.) */
+static uint32_t base_reg(Arm26 *cpu, int rn, uint32_t a)
 {
-    if (arm26_mode(cpu) != MODE_USR) {
-        cpu->r[15] = (v & (FLAG_NZCV | FLAG_I | FLAG_F)) | (v & PC_MASK) | (v & 3);
-    } else {
-        /* unprivileged: NZCV change; I,F,mode protected */
-        cpu->r[15] = (v & FLAG_NZCV) | (cpu->r[15] & (FLAG_I | FLAG_F)) | (v & PC_MASK) | MODE_USR;
-    }
+    if (rn == 15) return (a + 8) & PC_MASK;
+    return cpu->r[rn];
 }
 
-/* MOVS-style r15 write from an arithmetic ALU or LDM-with-S load:
- * kind 'arith'   : NZCV from computed flags, IF+mode kept
- * kind 'restore' : full CPSR from value (if priv) */
+/* r15 write from an arithmetic ALU result or an LDM-with-S load.
+ * Privileged + restore: full CPSR from the value, re-banking on mode change
+ * (this is the 26-bit exception-return path: SUBS PC,lr,#4 / LDM^ ...,pc). */
 static void write_pc_restore(Arm26 *cpu, uint32_t v, int restore)
 {
     if (restore && arm26_mode(cpu) != MODE_USR) {
+        set_mode(cpu, v & 3);
         cpu->r[15] = (v & (FLAG_NZCV | FLAG_I | FLAG_F)) | (v & PC_MASK) | (v & 3);
         return;
     }
@@ -228,9 +269,9 @@ static shift_result shift(Arm26 *cpu, uint32_t ins, uint32_t a)
         }
         return apply_shift(val, typ, n);
     }
-    /* shift by register */
+    /* shift by register; Rs=15 reads PC+8 with PSR zeroed (Rn/Rs rule) */
     int rs = (ins >> 8) & 0xF;
-    uint32_t n = get_reg(cpu, rs, a, 0) & 0xFFu;
+    uint32_t n = (rs == 15 ? ((a + 8) & PC_MASK) : get_reg(cpu, rs, a, 0)) & 0xFFu;
     if (typ == 0 && n == 0) { r.v = val; return r; }       /* LSL #0 */
     return apply_shift(val, typ, n);
 }
@@ -245,12 +286,12 @@ static void service_interrupts(Arm26 *cpu)
     uint32_t f = cpu->r[15];
     if (cpu->fiqPending && !(f & FLAG_F)) {
         cpu->fiqPending = 0;
-        exception(cpu, VEC_FIQ, MODE_FIQ, 1);
+        exception(cpu, VEC_FIQ, MODE_FIQ, 1, 4);
         return;
     }
     if (cpu->irqPending && !(f & FLAG_I)) {
         cpu->irqPending = 0;
-        exception(cpu, VEC_IRQ, MODE_IRQ, 0);
+        exception(cpu, VEC_IRQ, MODE_IRQ, 0, 4);
     }
 }
 
@@ -258,10 +299,18 @@ void arm26_run(Arm26 *cpu, uint64_t n)
 {
     while (n-- > 0 && !cpu->halted) {
         uint32_t a = cpu->r[15] & PC_MASK;
+        cpu->mem->fetch = 1; /* instruction fetches never data-abort */
         uint32_t ins = arm26_rd32(cpu, a);
+        cpu->mem->fetch = 0;
         cpu->r[15] = (cpu->r[15] & ~PC_MASK) | ((a + 4) & PC_MASK);
         cpu->cycles++;
         execute(cpu, a, ins);
+        if (cpu->mem->dabt) {
+            /* MEMC1a data abort: vector 0x10, SVC mode, I set,
+             * LR_svc := faulting pc+8 (return with SUBS PC,lr,#8) */
+            cpu->mem->dabt = 0;
+            exception(cpu, VEC_DABT, MODE_SVC, 0, 4);
+        }
         service_interrupts(cpu);
     }
 }
@@ -283,21 +332,24 @@ static void branch(Arm26 *cpu, uint32_t a, uint32_t ins)
 static void swi(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     (void)a;
-    /* Test-exit convention: SWI 0 halts the run loop (no exception). */
-    if ((ins & 0x00FFFFFFu) == 0) { cpu->halted = 1; return; }
-    exception(cpu, VEC_SWI, MODE_SVC, 0);
+    /* Test-exit convention: SWI 0 halts the run loop (no exception) only
+     * when swi0_halt is set; otherwise it vectors like any other SWI
+     * (RISC OS defines SWI 0 as OS_WriteC). */
+    if ((ins & 0x00FFFFFFu) == 0 && cpu->swi0_halt) { cpu->halted = 1; return; }
+    exception(cpu, VEC_SWI, MODE_SVC, 0, 0);
 }
 
 static void multiply(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     int acc = (ins >> 21) & 1, S = (ins >> 20) & 1;
     int rd = (ins >> 16) & 0xF, rn = (ins >> 12) & 0xF;
-    int rs = (ins >> 4) & 0xF, rm = ins & 0xF;
+    int rs = (ins >> 8) & 0xF, rm = ins & 0xF;
     uint32_t result = get_reg(cpu, rm, a, 0) * get_reg(cpu, rs, a, 0); /* low 32 bits */
     if (acc) result += get_reg(cpu, rn, a, 0);
     set_reg(cpu, rd, result, 0);
     if (S && rd != 15) {
-        uint32_t f = cpu->r[15] & ~FLAG_NZCV;
+        /* MULS/MLAS set N and Z only; C is meaningless and V is unaffected */
+        uint32_t f = cpu->r[15] & ~(FLAG_N | FLAG_Z);
         if (result & 0x80000000u) f |= FLAG_N;
         if (result == 0) f |= FLAG_Z;
         cpu->r[15] = f;
@@ -308,7 +360,7 @@ static void swp(Arm26 *cpu, uint32_t a, uint32_t ins)
 {
     int B = (ins >> 22) & 1;
     int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF, rm = ins & 0xF;
-    uint32_t addr = get_reg(cpu, rn, a, 0);
+    uint32_t addr = base_reg(cpu, rn, a);
     uint32_t old;
     if (B) {
         old = arm26_rd8(cpu, addr);
@@ -326,7 +378,15 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
     int S = (ins >> 20) & 1;
     int rn = (ins >> 16) & 0xF;
     int rd = (ins >> 12) & 0xF;
-    uint32_t op1 = get_reg(cpu, rn, a, 0);
+    /* TST/TEQ/CMP/CMN with S=0 are undefined instructions on ARMv2 */
+    if (opcode >= 0x8 && opcode <= 0xB && !S) { exception(cpu, VEC_UNDEF, MODE_SVC, 0, 0); return; }
+    /* 26-bit rule (Acorn ARM data manual): when R15 is the FIRST operand
+     * (Rn) of a data-processing instruction, only the 24 PC bits are
+     * presented - all PSR bits (flags 31:26 and mode 1:0) are supplied as
+     * zero. So "teq pc,#imm" XORs the immediate into a PSR-zero PC+8, which
+     * sets the mode from the immediate's bits 1:0 (TEQP pc,#0xc000003 returns
+     * to SVC) instead of XORing the current mode. Rm=R15 keeps the PSR. */
+    uint32_t op1 = (rn == 15) ? ((a + 8) & PC_MASK) : get_reg(cpu, rn, a, 0);
     shift_result sh = shift(cpu, ins, a);
     uint32_t op2 = sh.v;
     uint32_t result = 0;
@@ -378,7 +438,9 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
     int target = isCompare ? -1 : rd;
 
     if (S) {
-        if (sh.has_carry) flagsC = sh.carry != 0;
+        /* shifter carry-out feeds C only for logical ops; arithmetic
+         * ops (ADD/SUB/CMP/...) compute C/V from the operation itself */
+        if (sh.has_carry && !isArith) flagsC = sh.carry != 0;
         uint32_t f = cpu->r[15] & ~FLAG_NZCV;
         if (result & 0x80000000u) f |= FLAG_N;
         if (result == 0) f |= FLAG_Z;
@@ -388,12 +450,19 @@ static void data_processing(Arm26 *cpu, uint32_t a, uint32_t ins)
     }
 
     if (rd == 15 && S) {
-        /* r15 as ALU destination with S: 26-bit CPSR semantics.
-         * TEQP-style (TST/TEQ/logical with rd=15): the operand replaces the
-         * CPSR (flags AND I/F AND mode, subject to privilege).
-         * Arithmetic (SUBS pc, lr etc): NZCV from the op; I/F/mode preserved. */
-        if (isArith) write_pc_restore(cpu, cpu->r[15], 0);
-        else write_pc_logical(cpu, result);
+        /* r15 as ALU destination with S: 26-bit CPSR semantics. In a
+         * privileged mode the whole CPSR is replaced by the result (mode
+         * included, re-banking r8-r14) - this is how SUBS PC,lr,#4 and
+         * MOVS PC,lr perform exception returns. TSTP/TEQP/CMPP/CMNP keep
+         * the PC (their P-form immediates only touch PSR bits). */
+        if (arm26_mode(cpu) != MODE_USR) {
+            uint32_t pc = isCompare ? (cpu->r[15] & PC_MASK) : (result & PC_MASK);
+            set_mode(cpu, result & 3);
+            cpu->r[15] = (result & (FLAG_NZCV | FLAG_I | FLAG_F | 3)) | pc;
+        } else {
+            /* unprivileged: NZCV change only */
+            cpu->r[15] = (result & FLAG_NZCV) | (cpu->r[15] & (FLAG_I | FLAG_F | 3 | PC_MASK));
+        }
         return;
     }
     if (target == 15) {
@@ -409,7 +478,7 @@ static void single_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     int P = (ins >> 24) & 1, U = (ins >> 23) & 1, B = (ins >> 22) & 1;
     int W = (ins >> 21) & 1, L = (ins >> 20) & 1;
     int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF;
-    uint32_t base = get_reg(cpu, rn, a, 0);
+    uint32_t base = base_reg(cpu, rn, a);
 
     int32_t offset;
     if ((ins >> 25) & 1) { /* register offset, through the shifter (imm field = shift) */
@@ -432,14 +501,19 @@ static void single_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
             uint32_t r = (addr & 3) * 8;
             v = r ? ((word >> r) | (word << (32 - r))) : word; /* unaligned load rotates so byte@addr is LSB */
         }
-        set_reg(cpu, rd, v, 0);
+        /* ARM2: on a load with writeback, the base writeback happens before
+         * the load data is written to Rd, so when Rd==Rn (e.g. the linked-
+         * list walk "ldr fp,[fp],#0" in the RISC OS ROM) the loaded value
+         * wins over the updated base. */
+        if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0); /* writeback (post) or P with W */
+        if (rd == 15) cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK); /* LDR pc: jump, flags preserved */
+        else set_reg(cpu, rd, v, 0);
     } else {
         uint32_t v = get_reg(cpu, rd, a, 0);
         if (B) arm26_wr8(cpu, addr, (uint8_t)(v & 0xFF));
         else   arm26_wr32(cpu, addr, v);
+        if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0); /* writeback (post) or P with W */
     }
-
-    if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0); /* writeback (post) or P with W */
 }
 
 static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
@@ -454,7 +528,7 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
     int count = 0;
     for (int i = 0; i < 16; i++) if (list & (1u << i)) count++;
 
-    uint32_t base = get_reg(cpu, rn, a, 0);
+    uint32_t base = base_reg(cpu, rn, a);
     /* ARM rule for all forms: lowest-numbered register <-> lowest address. */
     uint32_t delta;
     if (U) delta = P ? 4u : 0u;
@@ -464,11 +538,18 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
 
     int userBank = S && priv; /* S without r15 in list = user-bank transfer */
 
+    int lowest = -1;
+    for (int i = 0; i < 16; i++) if (list & (1u << i)) { lowest = i; break; }
+
+    int wroteBack = 0;
     for (int i = 0; i < 16; i++) {
         if ((list & (1u << i)) == 0) continue;
         if (L) {
             uint32_t v = arm26_rd32(cpu, addr);
             if (i == 15) {
+                /* the writeback belongs to the mode the transfer started in:
+                 * apply it before the pc load can re-bank r8-r14 */
+                if (W && rn != 15) { set_reg(cpu, rn, finalBase, 0); wroteBack = 1; }
                 if (S && priv) write_pc_restore(cpu, v, 1); /* LDM ^ with PC: full CPSR restore */
                 else cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK);
             } else {
@@ -478,11 +559,61 @@ static void block_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
             uint32_t v;
             if (i == 15) v = (cpu->r[15] & 0xFC000000u) | ((a + 8) & PC_MASK) | (cpu->r[15] & 3);
             else v = get_reg(cpu, i, a, userBank);
+            /* ARM2: the base writeback lands at the end of the 2nd cycle, so
+             * a base register stored first in the list keeps its old value,
+             * but stored second or later saves the modified (final) value */
+            if (i == rn && W && i != lowest) v = finalBase;
             arm26_wr32(cpu, addr, v);
         }
         addr = addr + 4;
     }
-    if (W) set_reg(cpu, rn, finalBase, 0);
+    if (W && !wroteBack) set_reg(cpu, rn, finalBase, 0);
+}
+
+/* ARMv4 halfword/signed transfers: cond 000 P U I W L rn rd immHi 1 S H 1 immLo/rm */
+static void halfword_transfer(Arm26 *cpu, uint32_t a, uint32_t ins)
+{
+    int P = (ins >> 24) & 1, U = (ins >> 23) & 1, I = (ins >> 22) & 1;
+    int W = (ins >> 21) & 1, L = (ins >> 20) & 1;
+    int S = (ins >> 6) & 1, H = (ins >> 5) & 1;
+    int rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF;
+    uint32_t base = base_reg(cpu, rn, a);
+
+    int32_t offset;
+    if (I) offset = (int32_t)(((ins >> 4) & 0xF0u) | (ins & 0xFu)); /* immHi:immLo */
+    else   offset = (int32_t)get_reg(cpu, ins & 0xF, a, 0);          /* rm */
+    if (!U) offset = -offset;
+
+    uint32_t addr = base;
+    if (P) addr = addr + (uint32_t)offset;
+
+    if (L) {
+        uint32_t v;
+        if (S == 0 && H == 1) {        /* LDRH: zero-extended halfword */
+            v = (uint32_t)arm26_rd8(cpu, addr) | ((uint32_t)arm26_rd8(cpu, addr + 1) << 8);
+        } else if (S == 1 && H == 0) { /* LDRSB: sign-extended byte */
+            v = (uint32_t)(int32_t)(int8_t)arm26_rd8(cpu, addr);
+        } else if (S == 1 && H == 1) { /* LDRSH: sign-extended halfword */
+            uint32_t h = (uint32_t)arm26_rd8(cpu, addr) | ((uint32_t)arm26_rd8(cpu, addr + 1) << 8);
+            v = (uint32_t)(int32_t)(int16_t)h;
+        } else {                      /* S=0,H=0,L=1: undefined */
+            exception(cpu, VEC_UNDEF, MODE_SVC, 0, 0);
+            return;
+        }
+        /* ARM2 load-wins order, same as single_transfer: writeback before Rd */
+        if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0);
+        if (rd == 15) cpu->r[15] = (cpu->r[15] & ~PC_MASK) | (v & PC_MASK);
+        else set_reg(cpu, rd, v, 0);
+    } else {
+        if (!(S == 0 && H == 1)) {     /* only STRH exists (no STRSB/STRSH) */
+            exception(cpu, VEC_UNDEF, MODE_SVC, 0, 0);
+            return;
+        }
+        uint32_t v = get_reg(cpu, rd, a, 0);
+        arm26_wr8(cpu, addr, (uint8_t)(v & 0xFF));
+        arm26_wr8(cpu, addr + 1, (uint8_t)((v >> 8) & 0xFF));
+        if (!P || W) set_reg(cpu, rn, base + (uint32_t)offset, 0);
+    }
 }
 
 static void execute(Arm26 *cpu, uint32_t a, uint32_t ins)
@@ -494,15 +625,20 @@ static void execute(Arm26 *cpu, uint32_t a, uint32_t ins)
     if (grp == 2) { single_transfer(cpu, a, ins); return; }  /* 010: LDR/STR */
     if (grp == 4) { block_transfer(cpu, a, ins); return; }   /* 100: LDM/STM */
     if (grp == 5) { branch(cpu, a, ins); return; }           /* 101: B/BL */
-    if (grp == 3 || grp == 6 || grp == 7) {                  /* 011/110/111: coproc & ARMv3 extras */
-        exception(cpu, VEC_UNDEF, MODE_SVC, 0);
+    if (grp == 3) {                                           /* 011: LDR/STR, register offset */
+        if (((ins >> 4) & 1) == 0) { single_transfer(cpu, a, ins); return; }
+        exception(cpu, VEC_UNDEF, MODE_SVC, 0, 0); return;      /* bit 4 = 1: undefined before ARMv5 */
+    }
+    if (grp == 6 || grp == 7) {                               /* 110/111: coprocessor & ARMv3 extras */
+        exception(cpu, VEC_UNDEF, MODE_SVC, 0, 0);
         return;
     }
 
     /* grp === 0 / 1: data-processing space */
-    if ((ins & 0x0F000F00u) == 0x00000900u) { multiply(cpu, a, ins); return; }
+    if ((ins & 0x0FC000F0u) == 0x00000090u) { multiply(cpu, a, ins); return; } /* MUL/MLA: bits 27:22=0, bits 7:4=1001 */
     if ((ins & 0x0FB000F0u) == 0x01000090u) { swp(cpu, a, ins); return; }
     /* MRS pattern (ARMv3+; undefined on ARMv2a hardware) */
-    if ((ins & 0x0FFFFFF0u) == 0x010F0000u) { exception(cpu, VEC_UNDEF, MODE_SVC, 0); return; }
+    if ((ins & 0x0FFFFFF0u) == 0x010F0000u) { exception(cpu, VEC_UNDEF, MODE_SVC, 0, 0); return; }
+    if (grp == 0 && (ins & 0x90u) == 0x90u) { halfword_transfer(cpu, a, ins); return; } /* ARMv4 halfword/signed */
     data_processing(cpu, a, ins);
 }

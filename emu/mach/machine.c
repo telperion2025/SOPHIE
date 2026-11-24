@@ -6,40 +6,6 @@
 
 #include <string.h>
 
-/* ---------- logical window (MEMC-translated) ---------- */
-
-static uint8_t mach_logical_rd8(void *ctx, uint32_t addr)
-{
-    Machine *m = ctx;
-    if (m->memc.rom_mapped)
-        return addr < m->rom_size ? m->rom[addr] : 0xFF;
-    return addr < m->ram_size ? m->ram[addr] : 0xFF;
-}
-
-static void mach_logical_wr8(void *ctx, uint32_t addr, uint8_t v)
-{
-    Machine *m = ctx;
-    /* stores always land in DRAM (the ROM reset map is read-only in effect) */
-    if (addr < m->ram_size)
-        m->ram[addr] = v;
-}
-
-static uint32_t mach_logical_rd32(void *ctx, uint32_t addr)
-{
-    return (uint32_t)mach_logical_rd8(ctx, addr)
-         | ((uint32_t)mach_logical_rd8(ctx, addr + 1) << 8)
-         | ((uint32_t)mach_logical_rd8(ctx, addr + 2) << 16)
-         | ((uint32_t)mach_logical_rd8(ctx, addr + 3) << 24);
-}
-
-static void mach_logical_wr32(void *ctx, uint32_t addr, uint32_t v)
-{
-    mach_logical_wr8(ctx, addr, (uint8_t)v);
-    mach_logical_wr8(ctx, addr + 1, (uint8_t)(v >> 8));
-    mach_logical_wr8(ctx, addr + 2, (uint8_t)(v >> 16));
-    mach_logical_wr8(ctx, addr + 3, (uint8_t)(v >> 24));
-}
-
 /* ---------- podule space stub ---------- */
 
 static uint8_t podule_rd8(void *ctx, uint32_t addr)
@@ -59,12 +25,11 @@ static uint8_t mach_rom_rd8(void *ctx, uint32_t addr)
 {
     Machine *m = ctx;
     uint32_t off = addr - MACH_ROM_BASE;
-    return off < m->rom_size ? m->rom[off] : 0xFF;
-}
-
-static void mach_rom_wr8(void *ctx, uint32_t addr, uint8_t v)
-{
-    (void)ctx; (void)addr; (void)v; /* ROM is read-only */
+    /* the ROM chip sees only the low address bits: the image mirrors across
+     * the 8MB window (rom_size is a power of two) */
+    if (off < m->rom_size)
+        return m->rom[off];
+    return (m->rom_size & (m->rom_size - 1)) == 0 ? m->rom[off & (m->rom_size - 1)] : 0xFF;
 }
 
 static uint32_t mach_rom_rd32(void *ctx, uint32_t addr)
@@ -75,9 +40,21 @@ static uint32_t mach_rom_rd32(void *ctx, uint32_t addr)
          | ((uint32_t)mach_rom_rd8(ctx, addr + 3) << 24);
 }
 
+/* Writes into the ROM window program the MEMC CAM (page registers). */
+static void mach_rom_wr8(void *ctx, uint32_t addr, uint8_t v)
+{
+    Machine *m = ctx;
+    (void)addr;
+    m->memc.latchrom = 0;
+    memc_page_w(&m->memc, (uint32_t)v * 0x01010101u); /* STRB replicates on all lanes */
+}
+
 static void mach_rom_wr32(void *ctx, uint32_t addr, uint32_t v)
 {
-    (void)ctx; (void)addr; (void)v;
+    Machine *m = ctx;
+    (void)addr;
+    m->memc.latchrom = 0;
+    memc_page_w(&m->memc, v);
 }
 
 /* ---------- init ---------- */
@@ -110,16 +87,21 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
 
     mem_bus_init(&m->bus, NULL, 0); /* no flat head region: logical window is a device */
     arm26_init(&m->cpu, &m->bus);
+    /* A booting ROM gets real SWI exceptions: SWI 0 is OS_WriteC in RISC OS,
+     * not the test-exit halt. */
+    m->cpu.swi0_halt = 0;
     memc_init(&m->memc, m);
     vidc_init(&m->vidc, m);
     ioc_init(&m->ioc, m);
+    fdc_init(&m->fdc, m);
+    cmos_init(&m->cmos);
 
-    region_init(&m->r_logical, MACH_LOGICAL_BASE, MACH_LOGICAL_SIZE, m,
-                mach_logical_rd8, mach_logical_wr8, mach_logical_rd32, mach_logical_wr32);
+    region_init(&m->r_logical, MACH_LOGICAL_BASE, MACH_LOGICAL_SIZE, &m->memc,
+                memc_logical_rd8, memc_logical_wr8, memc_logical_rd32, memc_logical_wr32);
     mem_region_add(&m->bus, &m->r_logical);
 
     /* physical DRAM window: flat-array fast path over the same buffer */
-    region_init(&m->r_phys, MACH_PHYS_BASE, MACH_PHYS_SIZE, m, NULL, NULL, NULL, NULL);
+    region_init(&m->r_phys, MACH_PHYS_BASE, ram_size, m, NULL, NULL, NULL, NULL);
     m->r_phys.is_ram = 1;
     m->r_phys.ram = ram;
     m->r_phys.ram_mask = m->ram_mask;
@@ -144,6 +126,30 @@ void machine_init(Machine *m, uint8_t *ram, uint32_t ram_size,
     region_init(&m->r_rom, MACH_ROM_BASE, MACH_ROM_SIZE, m,
                 mach_rom_rd8, mach_rom_wr8, mach_rom_rd32, mach_rom_wr32);
     mem_region_add(&m->bus, &m->r_rom);
+
+    /* MEMC1a: accesses to unclaimed I/O space (podule/expansion
+     * 0x03000000-0x031FFFFF, no device responding) data-abort in USR mode
+     * (instruction fetches are exempt). Claimed devices (IOC/VIDC/MEMC/ROM
+     * window) stay accessible in USR mode - POST's own mode test does
+     * USR-mode device access, so a blanket supervisor-only I/O abort is not
+     * A310 behaviour. */
+    m->bus.io_abort_en = 1;
+    m->bus.io_base = MACH_PODULE_BASE;
+    m->bus.io_size = 0x03200000u - MACH_PODULE_BASE;
+}
+
+int machine_disc_attach(Machine *m, int drive, const char *path, int wprot)
+{
+    if (drive < 0 || drive >= DISC_MAX_DRIVES)
+        return -1;
+    return disc_load(&m->disc[drive], path, wprot);
+}
+
+void machine_disc_detach(Machine *m, int drive)
+{
+    if (drive < 0 || drive >= DISC_MAX_DRIVES)
+        return;
+    disc_unload(&m->disc[drive]);
 }
 
 void machine_run(Machine *m, uint64_t n)
@@ -153,8 +159,12 @@ void machine_run(Machine *m, uint64_t n)
         uint64_t chunk = n > 64 ? 64 : n;
         arm26_run(&m->cpu, chunk);
         uint64_t did = m->cpu.cycles - before;
-        if (did > 0)
+        if (did > 0) {
             ioc_tick(&m->ioc, &m->cpu, (uint32_t)did);
+            vidc_tick(&m->vidc, (uint32_t)did);
+            fdc_tick(&m->fdc, (uint32_t)did);
+            cmos_tick(&m->cmos, (uint32_t)did);
+        }
         n -= did;
         if (did == 0)
             break; /* halted */

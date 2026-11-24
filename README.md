@@ -27,10 +27,14 @@ tested:
 
 | WP | Deliverable | Status |
 | --- | --- | --- |
-| WP1 | C11 port of the `arm26` ARMv2/3 26-bit interpreter core + transplanted 42-assertion suite | **done** — `emu/core/`, `emu/tests/arm26_test.c` (42/42 pass; ~292 MIPS vs ~23 MIPS for the JS reference on the same host) |
-| WP2 | MMIO dispatch layer: device registry routing rd8/wr8/rd32/wr32 | **done** — `emu/mach/mem.[ch]`, `emu/tests/mmio_test.c` (8/8 pass) |
-| WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `emu/tests/machine_test.c` (13/13 pass) |
-| WP4–WP7 | Real ROM boot, host window layer, ARMv4 extensions, disc images | blocked on RISC OS ROM-image acquisition (see *Licensing and acquisition boundaries*) and host windowing; see spec section 10 |
+| WP1 | C11 port of the `arm26` ARMv2/3 26-bit interpreter core + transplanted test suite | **done** — `emu/core/`, `emu/tests/arm26_test.c` (50/50 pass; ~200 MIPS vs ~23 MIPS for the JS reference on the same host) |
+| WP2 | MMIO dispatch layer: device registry routing rd8/wr8/rd32/wr32 | **done** — `emu/mach/mem.[ch]`, `emu/tests/mmio_test.c` (9/9 pass) |
+| WP3 | Archimedes base machine: MEMC, VIDC, IOC device models + PCF8583 CMOS/RTC (ticking 100 Hz BCD clock, battery-backed `--cmos` persistence) + dummy-ROM boot test (1M-cycle IRQ-driven loop) | **done** — `emu/mach/{memc,vidc,ioc,cmos,machine}.[ch]`, `emu/tests/machine_test.c` + `emu/tests/cmos_test.c` (27 + 14 checks pass) |
+| WP6 (core part) | ARMv4 core extensions: group-011 register-offset LDR/STR, halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc` | **done** — `emu/core/arm26.c`, `emu/tests/arm26_ext_test.c` (15/15 pass); `emu/tools/romboot.c` smoke-boots real ROM images from `roms/`. Risc PC (IOMD/VIDC20) machine model: pending |
+| WP4 (machine part) | MEMC1A CAM walk (reset ROM latch, data-encoded page entries via the ROM window, 4K/8K/16K/32K pages, control/DMA registers); VIDC flyback (vsync) IRQ via IOC IRQA bit 3; IOC KART keyboard path with make/break queue | **done** — `emu/mach/{memc,vidc,ioc,machine}.[ch]`, `machine_test` 27/27 (dummy ROM boots through the CAM; timer + vsync + keyboard IRQs verified end to end), `romboot`: ROM300 passes POST and settles in the OS idle loop (stable polling loop with IRQs flowing, 70M+ cycles, zero data aborts — spec M2); ROM200/ROM300 run from CAM-mapped DRAM; ROM window mirrors across the full 8MB (0x03800000–0x03FFFFFF) as on hardware |
+| WP5 (host layer) | Host window layer: backend interface + headless (PPM/scripted input, CI-tested) + X11 backend (dlopen, `make host-x11`); `tools/sophie` frontend boots a ROM and presents VIDC frames with keyboard input | **done** — `emu/host/`, `emu/tools/sophie.c`, `host_test` 11/11; visible desktop pending M3 (ROM300 currently idles in the OS loop with a black screen; CMOS/RTC is now modelled) |
+| WP7 (disc images) | WD1772 floppy controller model at 0x03310000 (DRQ/INTRQ → IOC FIQ FH0/FH1, latches A/B at 0x03250040/0x03250018) + raw disc image backend (ADFS S/M/L/D/E/F/G, DOS 360-720K) + `mkadfs` blank-image tool + `--disc N=path`/`--ro` on `sophie`/`romboot` + `--cmos FILE` battery-backed CMOS RAM | **done** — `emu/mach/{fdc,disc}.[ch]`, `emu/tools/mkadfs.c`, `fdc_test` 33/33 incl. a guest-code end-to-end sector read; ROM300 still idles in its OS loop — desktop boot is M3 |
+| M3 (remaining) | Real ROM boot to visible desktop | ROMs local in `roms/` (dev branch carries `ROMS/`); CMOS/RTC (PCF8583) is modelled (§4.4a of the reference manual); still needs the hard-disc (HD63463/IDE) model so RISC OS finishes init; the ROM200 15.5M-cycle derail is tracked as issue #3; see spec section 10 |
 | M6+ | Native RISC OS-shaped desktop / module set | `native/` — not started (per spec) |
 
 ## Quick start (host build)
@@ -40,9 +44,18 @@ the JS reference suite/benchmark for comparison).
 
 ```sh
 make          # build the emulator library, tests and benchmark
-make test     # run the full test suite (arm26 42 + mmio 8 + machine 13 assertions)
+make test     # run the full test suite (arm26 50 + arm26_ext 15 + mmio 9 + machine 27 + host 11 + fdc 33 + edge 31 + cmos 14 = 190 assertions)
 make bench    # C benchmark, then the JS reference benchmark if node is present
 make clean
+```
+
+With a local ROM image in `roms/` (runtime data, not committed at release):
+
+```sh
+emu/tools/romboot roms/ROM300 5000000          # WP4 smoke: run 5M instructions
+emu/tools/mkadfs /tmp/blank.adl MyDisc         # WP7: blank ADFS L (640K) disc image
+emu/tools/sophie roms/ROM300 100 --ppm /tmp/f.ppm --disc 0=/tmp/blank.adl   # WP5+WP7 headless frontend
+make -C emu host-x11 && emu/tools/sophie-x11 roms/ROM300   # WP5 with a real X11 window (DISPLAY set)
 ```
 
 No target hardware is needed for any of the above.
@@ -76,14 +89,21 @@ PRMs); GPL'd reference emulators (RPCEmu, RPCEmu Extended) and the closed
 Arculator are **studied as behaviour reference and credited only** — no code
 or pseudocode is derived from them (spec section 5).
 
-Two acquisition boundaries are kept explicit, per the spec:
+ROM-image policy (development vs. distribution), per the spec:
 
-- **RISC OS ROM images** are *not* distributed here; they are a separate
-  acquisition problem from the emulator code (ROOL publishes sources under
-  Apache-2.0; ROM images you load into the emulator are obtained separately).
-- **Wi-Fi firmware blobs** (Broadcom/Cypress family) are loaded at runtime as
-  data under their own redistributable terms, never linked or mixed into the
-  licensed code.
+- **During development**, the development branch carries a `ROMS/` folder
+  with the images used for the WP4/M2.5 boot work: `ROMS/ROM200` and
+  `ROMS/ROM300` (Acorn RISC OS 2.00/3.00 images) and `ROMS/BCM2835.5.30/`
+  (ROOL's RISC OS 5.30 Raspberry Pi image, including Broadcom boot firmware
+  under its own `LICENCE.broadcom`). The WP4+ loader instead reads ROM images
+  from a local, gitignored `roms/` directory.
+- **For any distribution or public release**, the Acorn ROM images must be
+  removed first: their redistribution rights are unconfirmed, so they are
+  *not* licensed under the Apache-2.0 grant and must not ship with the code
+  (see `NOTICE`). Release artifacts contain code only; users supply their own
+  ROM images into `roms/` at runtime. The same applies to **Wi-Fi firmware
+  blobs** (Broadcom/Cypress family): loaded at runtime as data under their own
+  terms, never linked into or distributed with the licensed code.
 
 ## References
 

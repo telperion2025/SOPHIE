@@ -2,6 +2,18 @@
 *.o
 *.d
 emu/tests/arm26_test
+emu/tests/arm26_ext_test
 emu/tests/mmio_test
 emu/tests/machine_test
 emu/tests/bench
+emu/tools/romboot
+emu/tools/sophie
+emu/tools/sophie-x11
+emu/tools/mkadfs
+emu/tests/host_test
+emu/tests/fdc_test
+emu/tests/edge_test
+emu/tests/cmos_test
+
+# local ROM image working copies (runtime data; never commit — see README/NOTICE)
+roms/

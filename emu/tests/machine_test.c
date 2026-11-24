@@ -43,9 +43,12 @@ static uint32_t A_ADD_IMM(int rd, int rn, uint32_t imm) { return 0xE2800000u | (
 static uint32_t A_CMP_R(int rn, int rm)           { return 0xE1500000u | ((uint32_t)rn << 16) | (uint32_t)rm; }
 static uint32_t A_B(uint32_t pc, uint32_t target) { return 0xEA000000u | (((target - (pc + 8)) >> 2) & 0xFFFFFFu); }
 static uint32_t A_BNE(uint32_t pc, uint32_t target) { return 0x1A000000u | (((target - (pc + 8)) >> 2) & 0xFFFFFFu); }
+static uint32_t A_BEQ(uint32_t pc, uint32_t target) { return 0x0A000000u | (((target - (pc + 8)) >> 2) & 0xFFFFFFu); }
 static uint32_t A_STR(int rd, int rn, uint32_t off)  { return 0xE5800000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
 static uint32_t A_LDR(int rd, int rn, uint32_t off)  { return 0xE5900000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
 static uint32_t A_STRB(int rd, int rn, uint32_t off) { return 0xE5C00000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
+static uint32_t A_LDRB(int rd, int rn, uint32_t off) { return 0xE5D00000u | ((uint32_t)rn << 16) | ((uint32_t)rd << 12) | (off & 0xFFFu); }
+static uint32_t A_TST_IMM(int rn, uint32_t imm)    { return 0xE1100000u | ((uint32_t)rn << 16) | A_IMM12(imm); }
 static uint32_t A_LDMIA(int rn, uint32_t list) { return 0xE8900000u | ((uint32_t)rn << 16) | (list & 0xFFFFu); }
 static uint32_t A_STMIA(int rn, uint32_t list) { return 0xE8800000u | ((uint32_t)rn << 16) | (list & 0xFFFFu); }
 static uint32_t A_TEQP(int rn) { return 0xE330F000u | ((uint32_t)rn << 16); }
@@ -58,6 +61,10 @@ static uint32_t A_TEQP(int rn) { return 0xE330F000u | ((uint32_t)rn << 16); }
 #define W_START  0x40u         /* byte 0x100: init code */
 #define W_IRQ    0x80u         /* byte 0x200: IRQ handler */
 #define W_FAIL   0xC0u         /* byte 0x300: fail spin */
+#define W_POOL   0xB0u         /* byte 0x2C0: literal pool */
+
+/* MEMC control word: register 7 tag 0x03600000, 32K pages (bits 3:2=3), OS mode (bit 12) */
+#define MEMC_CTRL_WORD (0x03600000u | (7u << 17) | (3u << 2) | (1u << 12))
 
 static void build_dummy_rom(uint32_t *rom)
 {
@@ -75,17 +82,23 @@ static void build_dummy_rom(uint32_t *rom)
     /* r13 = 0x00100000 (SVC stack in RAM) */
     *c++ = A_MOV_IMM(13, 1);        pc += 4;
     *c++ = A_MOV_LSL(13, 13, 20);   pc += 4;
-    /* copy vectors ROM[0..0x1C] -> logical 0x00 */
+    /* MEMC control: 32K pages + OS mode, via literal pool */
+    *c++ = A_LDR(0, 15, (ROM_BASE_ADDR + W_POOL * 4) - (pc + 8)); pc += 4; /* r0 = ctrl word */
+    *c++ = A_MOV_IMM(2, 0x36);       pc += 4;
+    *c++ = A_MOV_LSL(2, 2, 20);     pc += 4;   /* r2 = 0x03600000 */
+    *c++ = A_STR(0, 2, 0);          pc += 4;   /* write control register */
+    /* CAM: logical page 0 -> physical page 0 (data word 0); clears ROM latch */
+    *c++ = A_MOV_IMM(3, 0x38);       pc += 4;
+    *c++ = A_MOV_LSL(3, 3, 20);     pc += 4;   /* r3 = 0x03800000 (ROM window = CAM writes) */
+    *c++ = A_MOV_IMM(1, 0);         pc += 4;
+    *c++ = A_STR(1, 3, 0);          pc += 4;
+    /* copy vectors ROM[0..0x1C] -> logical 0x00 (now DRAM via the CAM) */
     *c++ = A_MOV_IMM(0, 0x38);       pc += 4;
     *c++ = A_MOV_LSL(0, 0, 20);     pc += 4;   /* r0 = 0x03800000 */
     *c++ = A_MOV_IMM(1, 0);         pc += 4;   /* r1 = 0 */
     *c++ = A_LDMIA(0, 0x03FCu);      pc += 4;   /* {r2-r9} */
     *c++ = A_STMIA(1, 0x03FCu);      pc += 4;
-    /* MEMC control write: leave ROM reset map */
-    *c++ = A_MOV_IMM(0, 0x36);       pc += 4;
-    *c++ = A_MOV_LSL(0, 0, 20);     pc += 4;   /* r0 = 0x03600000 */
-    *c++ = A_MOV_IMM(2, 1);         pc += 4;
-    *c++ = A_STR(2, 0, 0);          pc += 4;
+    rom[W_POOL] = MEMC_CTRL_WORD;
     /* memory test: store r13 at 0x1000, read back, compare */
     *c++ = A_MOV_IMM(3, 1);         pc += 4;
     *c++ = A_MOV_LSL(3, 3, 12);     pc += 4;   /* r3 = 0x1000 */
@@ -98,7 +111,7 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_MOV_LSL(3, 3, 12);     pc += 4;   /* r3 = 0x3000 */
     *c++ = A_MOV_IMM(4, 2);         pc += 4;
     *c++ = A_STR(4, 3, 0);          pc += 4;
-    /* IOC: r2 = 0x03200000; timer0 latch 0x00FF, GO; ack; mask = timer0 */
+    /* IOC: r2 = 0x03200000; timer0 latch 0x00FF, GO; ack; masks: A=timer0|flyback, B=KART Rx */
     *c++ = A_MOV_IMM(2, 0x32);      pc += 4;
     *c++ = A_MOV_LSL(2, 2, 20);     pc += 4;   /* r2 = 0x03200000 */
     *c++ = A_MOV_IMM(5, 0xFF);      pc += 4;
@@ -106,9 +119,11 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_MOV_IMM(5, 0);         pc += 4;
     *c++ = A_STRB(5, 2, 0x44);      pc += 4;   /* T0 latch hi */
     *c++ = A_STRB(5, 2, 0x48);      pc += 4;   /* T0 GO */
-    *c++ = A_MOV_IMM(5, 0x20);      pc += 4;
-    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack IRQ request A */
-    *c++ = A_STRB(5, 2, 0x18);      pc += 4;   /* IRQ mask A = timer0 */
+    *c++ = A_MOV_IMM(5, 0x28);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack IRQ request A (timer0|flyback) */
+    *c++ = A_STRB(5, 2, 0x18);      pc += 4;   /* IRQ mask A = timer0|flyback */
+    *c++ = A_MOV_IMM(5, 0x80);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x28);      pc += 4;   /* IRQ mask B = KART Rx full */
     /* enable IRQs: CPSR := F|SVC|pc (full replace via TEQP, PC preserved).
      * The PC field is patched in after the block layout is known. */
     *c++ = A_MOV_IMM(0, 0x38);      pc += 4;
@@ -132,19 +147,35 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_STR(4, 5, 0);          pc += 4;
     *c++ = A_B(pc, loop_pc);        pc += 4;
 
-    /* IRQ handler: [0x2004]++, ack timer0, MOVS pc,r14 */
+    /* IRQ handler: [0x2004]++ (all IRQs); if IRQA&0x08 [0x2008]++ (flyback);
+     * if IRB&0x80 [0x200C]++ (KART Rx); ack A=0x28, B=0x80; MOVS pc,r14 */
     c = rom + W_IRQ;
     pc = ROM_BASE_ADDR + W_IRQ * 4;
     *c++ = A_MOV_IMM(6, 2);         pc += 4;
     *c++ = A_MOV_LSL(6, 6, 12);     pc += 4;   /* r6 = 0x2000 */
-    *c++ = A_ADD_IMM(6, 6, 4);      pc += 4;   /* r6 = 0x2004 */
-    *c++ = A_LDR(4, 6, 0);          pc += 4;
+    *c++ = A_LDR(4, 6, 4);          pc += 4;
     *c++ = A_ADD_IMM(4, 4, 1);      pc += 4;
-    *c++ = A_STR(4, 6, 0);          pc += 4;
+    *c++ = A_STR(4, 6, 4);          pc += 4;   /* [0x2004]++ */
     *c++ = A_MOV_IMM(2, 0x32);      pc += 4;
     *c++ = A_MOV_LSL(2, 2, 20);     pc += 4;   /* r2 = 0x03200000 */
-    *c++ = A_MOV_IMM(5, 0x20);      pc += 4;
-    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack timer0 */
+    *c++ = A_LDRB(5, 2, 0x10);      pc += 4;   /* r5 = IRQ_STATUS_A */
+    *c++ = A_TST_IMM(5, 0x08);      pc += 4;
+    int i_beq1 = (int)(c - rom); *c++ = A_BEQ(pc, pc + 16); pc += 4; /* skip increment if bit clear */
+    *c++ = A_LDR(4, 6, 8);          pc += 4;
+    *c++ = A_ADD_IMM(4, 4, 1);      pc += 4;
+    *c++ = A_STR(4, 6, 8);          pc += 4;   /* [0x2008]++ */
+    rom[i_beq1] = A_BEQ(ROM_BASE_ADDR + i_beq1 * 4, pc);
+    *c++ = A_LDRB(5, 2, 0x20);      pc += 4;   /* r5 = IRQ_STATUS_B */
+    *c++ = A_TST_IMM(5, 0x80);      pc += 4;
+    int i_beq2 = (int)(c - rom); *c++ = A_BEQ(pc, pc + 16); pc += 4;
+    *c++ = A_LDR(4, 6, 12);         pc += 4;
+    *c++ = A_ADD_IMM(4, 4, 1);      pc += 4;
+    *c++ = A_STR(4, 6, 12);         pc += 4;   /* [0x200C]++ */
+    rom[i_beq2] = A_BEQ(ROM_BASE_ADDR + i_beq2 * 4, pc);
+    *c++ = A_MOV_IMM(5, 0x28);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x14);      pc += 4;   /* ack A: timer0|flyback */
+    *c++ = A_MOV_IMM(5, 0x80);      pc += 4;
+    *c++ = A_STRB(5, 2, 0x24);      pc += 4;   /* ack B: KART Rx full */
     *c++ = A_MOVS_PC_R14;           pc += 4;
 
     /* fail: [0x3000] = 1, spin */
@@ -154,6 +185,119 @@ static void build_dummy_rom(uint32_t *rom)
     *c++ = A_MOV_IMM(4, 1);
     *c++ = A_STR(4, 3, 0);
     *c++ = A_SPIN;
+}
+
+/* ---------- second dummy ROM: data-abort (MEMC unclaimed I/O in USR mode) ---------- */
+
+#define W2_START 0x40u   /* byte 0x100 */
+#define W2_DABT  0x60u   /* byte 0x180: DABT handler */
+
+/* Build a ROM that (latchrom stays set, vectors come from ROM):
+ *  - in SVC mode: read IOC (claimed device) - must not abort
+ *  - TEQP to USR mode
+ *  - in USR mode: read IOC again - claimed device, must not abort
+ *  - in USR mode: read podule space 0x03000000 - must data-abort (vector 0x10)
+ * The DABT handler stores 0xAB and lr_svc at physical 0x02003008/0x0200300C. */
+static void build_dabt_rom(uint32_t *rom, int *fault_word)
+{
+    memset(rom, 0, ROM_WORDS * 4);
+    rom[0x00] = A_B(0x00000000u, ROM_BASE_ADDR + W2_START * 4);
+    rom[0x04] = A_B(0x00000010u, ROM_BASE_ADDR + W2_DABT * 4); /* DABT vector */
+
+    uint32_t *c = rom + W2_START;
+    uint32_t pc = ROM_BASE_ADDR + W2_START * 4;
+    *c++ = A_MOV_IMM(2, 0x32);       pc += 4;
+    *c++ = A_MOV_LSL(2, 2, 20);      pc += 4;   /* r2 = 0x03200000 (IOC, claimed) */
+    *c++ = A_MOV_IMM(3, 0x20);       pc += 4;
+    *c++ = A_MOV_LSL(3, 3, 20);      pc += 4;   /* r3 = 0x02000000 */
+    *c++ = A_ADD_IMM(3, 3, 0x3000);  pc += 4;   /* r3 = 0x02003000 (marker block) */
+    /* SVC-mode IOC read: ok, no abort; marker[0] = 0x11 */
+    *c++ = A_LDR(4, 2, 0);           pc += 4;
+    *c++ = A_MOV_IMM(5, 0x11);       pc += 4;
+    *c++ = A_STR(5, 3, 0);           pc += 4;
+    /* switch to USR mode: CPSR := I|F|pc|USR via TEQP (r0 = I|F|USR) */
+    *c++ = A_MOV_IMM(0, 0x0C000000u); pc += 4;
+    *c++ = A_TEQP(0);                pc += 4;
+    /* USR-mode IOC read: claimed device, must not abort; marker[4] = 0x22 */
+    *c++ = A_LDR(4, 2, 0);           pc += 4;
+    *c++ = A_MOV_IMM(5, 0x22);       pc += 4;
+    *c++ = A_STR(5, 3, 4);           pc += 4;
+    /* USR-mode podule read 0x03000000: data abort */
+    *c++ = A_MOV_IMM(5, 0x30);       pc += 4;
+    *c++ = A_MOV_LSL(5, 5, 20);      pc += 4;   /* r5 = 0x03000000 */
+    *fault_word = (int)(c - rom);
+    *c++ = A_LDR(6, 5, 0);           pc += 4;   /* <-- faults: dabt_addr 0x03000000 */
+    /* unreached: marker[8] = 0xEE */
+    *c++ = A_MOV_IMM(5, 0xEE);       pc += 4;
+    *c++ = A_STR(5, 3, 8);           pc += 4;
+    *c++ = A_SPIN;                   pc += 4;
+
+    /* DABT handler (SVC mode): marker[8] = 0xAB, marker[0xC] = lr_svc, spin */
+    c = rom + W2_DABT;
+    *c++ = A_MOV_IMM(3, 0x20);
+    *c++ = A_MOV_LSL(3, 3, 20);
+    *c++ = A_ADD_IMM(3, 3, 0x3000);  /* r3 = 0x02003000 */
+    *c++ = A_MOV_IMM(5, 0xAB);
+    *c++ = A_STR(5, 3, 8);
+    *c++ = A_STR(14, 3, 0x0C);      /* lr_svc */
+    *c++ = A_SPIN;
+}
+
+/* ---------- I2C bitbang helpers over IOC CONTROL (SDA=C0, SCL=C1) ---------- */
+
+static void i2c_set(Machine *m, int sda, int scl)
+{
+    mem_wr8(&m->bus, IOC_BASE + IOC_CONTROL, (uint8_t)(0xC0u | ((scl & 1) << 1) | (sda & 1)));
+}
+
+static int i2c_sda(Machine *m)
+{
+    return mem_rd8(&m->bus, IOC_BASE + IOC_CONTROL) & 1;
+}
+
+static void i2c_start(Machine *m)
+{
+    i2c_set(m, 1, 1);
+    i2c_set(m, 0, 1); /* SDA falls while SCL high: START */
+    i2c_set(m, 0, 0);
+}
+
+static void i2c_stop(Machine *m)
+{
+    i2c_set(m, 0, 0);
+    i2c_set(m, 0, 1);
+    i2c_set(m, 1, 1); /* SDA rises while SCL high: STOP */
+}
+
+/* transmit one byte, return the ACK level sampled on the 9th clock (0=ACK) */
+static int i2c_tx(Machine *m, uint8_t b)
+{
+    for (int i = 7; i >= 0; i--) {
+        int bit = (b >> i) & 1;
+        i2c_set(m, bit, 0);
+        i2c_set(m, bit, 1);
+        i2c_set(m, bit, 0);
+    }
+    i2c_set(m, 1, 0); /* release SDA for the ACK bit */
+    i2c_set(m, 1, 1);
+    int ack = i2c_sda(m);
+    i2c_set(m, 1, 0);
+    return ack;
+}
+
+static uint8_t i2c_rx(Machine *m, int ack)
+{
+    uint8_t b = 0;
+    i2c_set(m, 1, 0);
+    for (int i = 7; i >= 0; i--) {
+        i2c_set(m, 1, 1);
+        b = (uint8_t)((b << 1) | (uint8_t)i2c_sda(m));
+        i2c_set(m, 1, 0);
+    }
+    i2c_set(m, ack ? 0 : 1, 0); /* host ACK (0) or NACK (1) */
+    i2c_set(m, ack ? 0 : 1, 1);
+    i2c_set(m, ack ? 0 : 1, 0);
+    return b;
 }
 
 int main(void)
@@ -170,8 +314,10 @@ int main(void)
     /* WP3 acceptance: boot the dummy ROM, run an IRQ-driven loop 1M cycles */
     machine_run(&m, 1000000);
 
-    snprintf(det, sizeof det, "rom_mapped=%d", m.memc.rom_mapped);
-    check("memc-control-written", m.memc.rom_mapped == 0, det);
+    snprintf(det, sizeof det, "latchrom=%d pagesize=%d pages[0]=%d ctrl=%08" PRIx32,
+             m.memc.latchrom, m.memc.pagesize_idx, m.memc.pages[0], m.memc.ctrl);
+    check("memc-cam-programmed",
+          m.memc.latchrom == 0 && m.memc.pagesize_idx == 3 && m.memc.pages[0] == 0, det);
 
     uint32_t vec = mem_rd32(&m.bus, 0x18);
     uint32_t vec_expect = A_B(0x00000018u, ROM_BASE_ADDR + W_IRQ * 4);
@@ -200,15 +346,114 @@ int main(void)
     uint32_t rom0 = mem_rd32(&m.bus, ROM_BASE_ADDR);
     check("rom-window-readable", rom0 == A_B(0x00000000u, ROM_BASE_ADDR + W_START * 4), "reset vector in ROM");
 
+    /* the ROM image mirrors across the full 8MB window (0x03800000-0x03FFFFFF):
+     * 0x03C00100 aliases ROM offset 0x100 (2KB dummy ROM) */
+    uint32_t mir = mem_rd32(&m.bus, 0x03C00100u);
+    snprintf(det, sizeof det, "mirror=%08" PRIx32 " expect=%08" PRIx32, mir, rom[0x40]);
+    check("rom-window-mirrored", mir == rom[0x40], det);
+
     uint8_t irqmask = mem_rd8(&m.bus, 0x03200000u + 0x18);
     snprintf(det, sizeof det, "IRQ_MASK_A=%" PRIx32, irqmask);
-    check("ioc-irq-mask", irqmask == 0x20, det);
+    check("ioc-irq-mask", irqmask == 0x28, det);
 
-    /* keyboard: queue a byte, IRQ B Rx-full set, read KART clears it */
+    /* CMOS (PCF8583 at I2C 0xA0) on IOC CONTROL SDA/SCL: read the default
+     * config byte 0x30, then write/read back CMOS RAM byte 0x40 */
+    i2c_start(&m);
+    int ack1 = i2c_tx(&m, 0xA0); /* write address */
+    int ack2 = i2c_tx(&m, 0x30); /* register 0x30 */
+    snprintf(det, sizeof det, "ack=%d,%d", ack1, ack2);
+    check("cmos-addr-ack", ack1 == 0 && ack2 == 0, det);
+    i2c_start(&m);               /* repeated START */
+    i2c_tx(&m, 0xA1);            /* read address */
+    uint8_t cmos30 = i2c_rx(&m, 0);
+    i2c_stop(&m);
+    snprintf(det, sizeof det, "cmos[0x30]=%02x", cmos30);
+    check("cmos-default-config", cmos30 == 0x20, det);
+
+    i2c_start(&m);
+    i2c_tx(&m, 0xA0);
+    i2c_tx(&m, 0x40);
+    i2c_tx(&m, 0x5A);
+    i2c_stop(&m);
+    i2c_start(&m);
+    i2c_tx(&m, 0xA0);
+    i2c_tx(&m, 0x40);
+    i2c_start(&m);
+    i2c_tx(&m, 0xA1);
+    uint8_t cmos40 = i2c_rx(&m, 1); /* NACK: end of read */
+    i2c_stop(&m);
+    snprintf(det, sizeof det, "cmos[0x40]=%02x", cmos40);
+    check("cmos-write-read-ram", cmos40 == 0x5A, det);
+
+    /* the PCF8583 clock ticks with machine_run: 1M cycles = 12 centiseconds */
+    i2c_start(&m);
+    i2c_tx(&m, 0xA0);
+    i2c_tx(&m, 0x01);
+    i2c_start(&m);
+    i2c_tx(&m, 0xA1);
+    uint8_t cmoscs = i2c_rx(&m, 1);
+    i2c_stop(&m);
+    snprintf(det, sizeof det, "cmos[0x01]=%02x (1M cyc / 80000 = 12 cs)", cmoscs);
+    check("cmos-clock-ticks", cmoscs == 0x12, det);
+
+    /* floppy drive status block 0x033B0000: no disc -> 0xFF (lines idle high),
+     * disc present rw -> 0x60 (DD density bits 5-6), wprot -> bit 3 set;
+     * +0x08/+0x0C are read/write control latches */
+    {
+        uint8_t st_none = mem_rd8(&m.bus, 0x033B0004u);
+        m.disc[0].present = 1; m.disc[0].wprot = 0;
+        uint8_t st_rw = mem_rd8(&m.bus, 0x033B0004u);
+        m.disc[0].wprot = 1;
+        uint8_t st_wp = mem_rd8(&m.bus, 0x033B0004u);
+        m.disc[0].wprot = 0;
+        mem_wr8(&m.bus, 0x033B0008u, 0x03);
+        mem_wr8(&m.bus, 0x033B000Cu, 0x12);
+        uint8_t l8 = mem_rd8(&m.bus, 0x033B0008u);
+        uint8_t lc = mem_rd8(&m.bus, 0x033B000Cu);
+        snprintf(det, sizeof det, "none=%02x rw=%02x wp=%02x latch=%02x,%02x",
+                 st_none, st_rw, st_wp, l8, lc);
+        check("ioc-floppy-status", st_none == 0xFF && st_rw == 0x60 && st_wp == 0x68, det);
+        check("ioc-floppy-latch", l8 == 0x03 && lc == 0x12, det);
+    }
+
+    /* VIDC vsync: program a CRTC mode (8 MHz pixel clock), then count the
+     * flyback IRQs the dummy-ROM handler tallies in [0x2008] */
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | (2u << 2)); /* 4bpp, pixel clock 0 */
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HCR)  << 24) | (100u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBSR) << 24) | (10u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBER) << 24) | (90u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VCR)  << 24) | (312u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBSR) << 24) | (5u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBER) << 24) | (300u << 14));
+    uint32_t irq0 = mem_rd32(&m.bus, 0x2004);
+    machine_run(&m, 500000);
+    uint32_t vsc = mem_rd32(&m.bus, 0x2008);
+    uint32_t irq1 = mem_rd32(&m.bus, 0x2004);
+    snprintf(det, sizeof det, "vsync-irqs=%" PRIu32 " total %" PRIu32 "->%" PRIu32, vsc, irq0, irq1);
+    check("vsync-irqs-delivered", vsc > 0 && irq1 > irq0, det);
+
+    /* forced vsync: raise the flyback line directly, no frame wait - IRQA
+     * bit 3 must be set immediately and the handler must tally it */
+    uint32_t vsc0 = mem_rd32(&m.bus, 0x2008);
+    ioc_flyback(&m.ioc);
+    uint8_t sta = mem_rd8(&m.bus, 0x03200000u + IOC_IRQ_STATUS_A);
+    snprintf(det, sizeof det, "IRQA=%" PRIx32, sta);
+    check("vsync-flyback-bit-set", (sta & IOC_IRA_FLYBACK) != 0, det);
+    machine_run(&m, 10000);
+    uint32_t vsc1 = mem_rd32(&m.bus, 0x2008);
+    snprintf(det, sizeof det, "vsync-irqs=%" PRIu32 "->%" PRIu32, vsc0, vsc1);
+    check("vsync-irq-forced-delivered", vsc1 > vsc0, det);
+
+    /* keyboard: queue a byte, IRQ B Rx-full set and delivered to the handler
+     * ([0x200C]); reading KART returns the byte and clears Rx-full */
     ioc_key_press(&m.ioc, 'A');
     uint8_t stb = mem_rd8(&m.bus, 0x03200000u + IOC_IRQ_STATUS_B);
     snprintf(det, sizeof det, "IRB=%" PRIx32, stb);
     check("kart-rx-full", (stb & IOC_IRB_KART_RX_FULL) != 0, det);
+    machine_run(&m, 100000);
+    uint32_t kc = mem_rd32(&m.bus, 0x200C);
+    snprintf(det, sizeof det, "kart-irqs=%" PRIu32, kc);
+    check("kart-irq-delivered", kc > 0, det);
     uint8_t key = mem_rd8(&m.bus, 0x03200000u + IOC_KART);
     stb = mem_rd8(&m.bus, 0x03200000u + IOC_IRQ_STATUS_B);
     snprintf(det, sizeof det, "key=%c IRB=%" PRIx32, key, stb);
@@ -217,18 +462,19 @@ int main(void)
     /* VIDC: program a small 4bpp mode and render a frame */
     mem_wr32(&m.bus, VIDC_BASE, (VIDC_REG_CONTROL << 24) | 8u);   /* bpp mode 2 (4bpp) */
     mem_wr32(&m.bus, VIDC_BASE, (0x00u << 24) | 0xF00u);           /* palette 0 = blue */
-    mem_wr32(&m.bus, VIDC_BASE, (0x05u << 24) | 0x00Fu);           /* palette 5 = red */
-    mem_wr32(&m.bus, VIDC_BASE, (0x20u << 24) | (170u << 14));     /* HCR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x22u << 24) | (50u << 14));      /* HBSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x23u << 24) | (60u << 14));      /* HDSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x24u << 24) | (140u << 14));     /* HDER */
-    mem_wr32(&m.bus, VIDC_BASE, (0x25u << 24) | (160u << 14));     /* HBER */
-    mem_wr32(&m.bus, VIDC_BASE, (0x28u << 24) | (200u << 14));     /* VCR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Au << 24) | (20u << 14));      /* VBSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Bu << 24) | (30u << 14));      /* VDSR */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Cu << 24) | (100u << 14));     /* VDER */
-    mem_wr32(&m.bus, VIDC_BASE, (0x2Du << 24) | (190u << 14));     /* VBER */
-    mem_wr32(&m.bus, MEMC_BASE + MEMC_VIDSTART_OFF, 0x10000u);     /* video start */
+    mem_wr32(&m.bus, VIDC_BASE, (0x14u << 24) | 0x00Fu);           /* palette 5 = red */
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HCR)  << 24) | (170u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBSR) << 24) | (50u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HDSR) << 24) | (60u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HDER) << 24) | (140u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_HBER) << 24) | (160u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VCR)  << 24) | (200u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBSR) << 24) | (20u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VDSR) << 24) | (30u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VDER) << 24) | (100u << 14));
+    mem_wr32(&m.bus, VIDC_BASE, (VIDC_CRTC_REG(VIDC_CRTC_VBER) << 24) | (190u << 14));
+    for (uint32_t p = 0; p <= 2; p++) memc_map_page(&m.memc, p, p); /* cover logical 0x10000 */
+    mem_wr32(&m.bus, MEMC_BASE, 0x03600000u | (1u << 17) | ((0x10000u / 16) << 2)); /* video start reg = 0x10000 */
     mem_wr8(&m.bus, 0x10000u, 0x05u);                              /* first pixel byte */
 
     static uint32_t fb[400 * 300];
@@ -241,6 +487,37 @@ int main(void)
     check("vidc-render-pixel-red", p0 == 0xFF0000u, det);
     snprintf(det, sizeof det, "fb[10,27]=%" PRIx32, p1);
     check("vidc-render-pixel-blue", p1 == 0x0000FFu, det);
+
+    /* MEMC data abort: USR-mode data access to unclaimed I/O (podule space)
+     * aborts to vector 0x10 with lr_svc = faulting pc+8 (SUBS PC,lr,#8 retries); claimed devices
+     * (IOC) and instruction fetches stay accessible in USR mode */
+    {
+        static uint8_t ram2[0x400000];
+        static uint32_t rom2[ROM_WORDS];
+        int fault_word = 0;
+        build_dabt_rom(rom2, &fault_word);
+        Machine m2;
+        machine_init(&m2, ram2, sizeof ram2, (uint8_t *)rom2, ROM_WORDS * 4);
+        machine_run(&m2, 100000);
+
+        uint32_t m0 = mem_rd32(&m2.bus, 0x02003000u);
+        snprintf(det, sizeof det, "marker0=%02x (SVC IOC read)", m0);
+        check("dabt-svc-device-read-ok", m0 == 0x11, det);
+
+        uint32_t m4 = mem_rd32(&m2.bus, 0x02003004u);
+        snprintf(det, sizeof det, "marker4=%02x (USR IOC read, claimed device)", m4);
+        check("dabt-usr-claimed-device-ok", m4 == 0x22, det);
+
+        uint32_t m8 = mem_rd32(&m2.bus, 0x02003008u);
+        uint32_t lrsvc = mem_rd32(&m2.bus, 0x0200300Cu);
+        uint32_t fault_pc = ROM_BASE_ADDR + (uint32_t)fault_word * 4;
+        uint32_t lr_expect = 0x0C000000u | ((fault_pc + 8) & PC_MASK) | MODE_USR;
+        snprintf(det, sizeof det, "marker8=%02x lr_svc=%08x expect=%08x dabts=%" PRIu64 " dabt_addr=%08x mode=%u",
+                 m8, lrsvc, lr_expect, m2.bus.dabt_count, m2.bus.dabt_addr, m2.cpu.r[15] & 3);
+        check("dabt-usr-podule-aborts-to-vector",
+              m8 == 0xAB && lrsvc == lr_expect && m2.bus.dabt_count == 1 &&
+              m2.bus.dabt_addr == 0x03000000u && (m2.cpu.r[15] & 3) == MODE_SVC, det);
+    }
 
     return test_summary("machine") ? 1 : 0;
 }

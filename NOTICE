@@ -26,6 +26,13 @@ material is derived from them (spec section 5 derivation boundary):
     — used only for hardware register-layout facts (addresses, bit
     fields), which are not copyrightable expression.
 
-RISC OS ROM images and Broadcom/Cypress Wi-Fi firmware blobs are runtime
-loaded data acquired separately under their own terms; they are not part
-of this distribution and are not licensed under the Apache License.
+ROM images: during development, the development branch carries `ROMS/`
+(Acorn RISC OS 2.00/3.00 images `ROM200`/`ROM300`, and ROOL's RISC OS 5.30
+Raspberry Pi image under `ROMS/BCM2835.5.30/` with Broadcom boot firmware
+under `LICENCE.broadcom`). These are runtime-loaded data, not licensed under
+the Apache License. Before any distribution or public release, the Acorn
+ROM images must be removed (redistribution rights unconfirmed); releases ship
+code only and users supply their own ROM images into a local `roms/`
+directory. Broadcom/Cypress Wi-Fi firmware blobs follow the same rule:
+runtime data under their own terms, never linked or distributed with the
+licensed code.

@@ -41,6 +41,19 @@ void mem_region_add(mem_bus *bus, mem_region *r)
     t->next = r;
 }
 
+/* MEMC1a supervisor-only I/O window: returns 1 when the access aborts. */
+static int mem_dabt(mem_bus *bus, uint32_t addr)
+{
+    if (!bus->io_abort_en || bus->fetch || !bus->user_mode)
+        return 0;
+    if (addr < bus->io_base || addr >= bus->io_base + bus->io_size)
+        return 0;
+    bus->dabt = 1;
+    bus->dabt_addr = addr;
+    bus->dabt_count++;
+    return 1;
+}
+
 static mem_region *mem_find(mem_bus *bus, uint32_t addr)
 {
     /* fast path: head region is flat RAM covering base 0 */
@@ -55,6 +68,8 @@ static mem_region *mem_find(mem_bus *bus, uint32_t addr)
 
 uint8_t mem_rd8(mem_bus *bus, uint32_t addr)
 {
+    if (mem_dabt(bus, addr))
+        return 0xFF;
     mem_region *r = mem_find(bus, addr);
     if (r == NULL) {
         bus->unmapped_rd++;
@@ -70,6 +85,8 @@ uint8_t mem_rd8(mem_bus *bus, uint32_t addr)
 
 void mem_wr8(mem_bus *bus, uint32_t addr, uint8_t v)
 {
+    if (mem_dabt(bus, addr))
+        return;
     mem_region *r = mem_find(bus, addr);
     if (r == NULL) {
         bus->unmapped_wr++;
@@ -88,6 +105,8 @@ void mem_wr8(mem_bus *bus, uint32_t addr, uint8_t v)
 
 uint32_t mem_rd32(mem_bus *bus, uint32_t addr)
 {
+    if (mem_dabt(bus, addr))
+        return 0xFFFFFFFFu;
     mem_region *r = mem_find(bus, addr);
     if (r == NULL) {
         bus->unmapped_rd++;
@@ -113,6 +132,8 @@ uint32_t mem_rd32(mem_bus *bus, uint32_t addr)
 
 void mem_wr32(mem_bus *bus, uint32_t addr, uint32_t v)
 {
+    if (mem_dabt(bus, addr))
+        return;
     mem_region *r = mem_find(bus, addr);
     if (r == NULL) {
         bus->unmapped_wr++;

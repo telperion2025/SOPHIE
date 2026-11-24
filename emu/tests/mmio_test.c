@@ -15,7 +15,9 @@
 
 #include "test.h"
 
-#define DEV_BASE 0x10000000u
+/* Device lives inside the 26-bit address space (0x00000000-0x03FFFFFF) so
+ * the 26-bit CPU can reach it through the address-bus mask. */
+#define DEV_BASE 0x02000000u
 #define DEV_SIZE 0x100u
 
 typedef struct DummyDev {
@@ -103,10 +105,10 @@ int main(void)
     /* 4-6: CPU STR/LDR reach the device through the registry */
     {
         MmioRig m; mmio_rig_init(&m);
-        /* r1 = 0x10000000 (MOV r1,#1; MOV r1,r1,LSL#28); r0=0x42; STR r0,[r1]; LDR r2,[r1]; SWI 0 */
+        /* r1 = 0x02000000 (MOV r1,#1; MOV r1,r1,LSL#25); r0=0x42; STR r0,[r1]; LDR r2,[r1]; SWI 0 */
         uint32_t prog[] = {
             0xE3A01001u,  /* MOV r1,#1 */
-            0xE1A01E01u,  /* MOV r1,r1,LSL#28 */
+            0xE1A01C81u,  /* MOV r1,r1,LSL#25 -> 0x02000000 */
             0xE3A00042u,  /* MOV r0,#0x42 */
             0xE5810000u,  /* STR r0,[r1] */
             0xE5912000u,  /* LDR r2,[r1] */
@@ -117,6 +119,28 @@ int main(void)
         snprintf(det, sizeof det, "r2=%" PRIx32 " wr=%" PRIu64 " rd=%" PRIu64,
                  m.core.cpu.r[2], m.dev.wr_count, m.dev.rd_count);
         check("cpu-str-ld hit device",
+              m.core.cpu.r[2] == 0x42 && m.dev.wr_count == 1 && m.dev.rd_count == 1, det);
+    }
+
+    /* 6b: the CPU address bus is 26 bits - flag/high bits in a base register
+     * are masked off before dispatch (r15 read as an operand carries NZCVIF) */
+    {
+        MmioRig m; mmio_rig_init(&m);
+        /* r1 = 0x02000000 | 0xC0000000 = 0xC2000000; STR/LDR still hit DEV_BASE */
+        uint32_t prog[] = {
+            0xE3A01001u,  /* MOV r1,#1 */
+            0xE1A01C81u,  /* MOV r1,r1,LSL#25 -> 0x02000000 */
+            0xE38114C0u,  /* ORR r1,r1,#0xC0000000 (imm8 0xC0 rot 4) */
+            0xE3A00042u,  /* MOV r0,#0x42 */
+            0xE5810000u,  /* STR r0,[r1] */
+            0xE5912000u,  /* LDR r2,[r1] */
+            0xEF000000u,  /* SWI 0 (halt) */
+        };
+        rig_load(&m.core, prog, 7, 0);
+        arm26_run(&m.core.cpu, 12);
+        snprintf(det, sizeof det, "r1=%" PRIx32 " r2=%" PRIx32 " wr=%" PRIu64 " rd=%" PRIu64,
+                 m.core.cpu.r[1], m.core.cpu.r[2], m.dev.wr_count, m.dev.rd_count);
+        check("cpu-address-bus-26bit",
               m.core.cpu.r[2] == 0x42 && m.dev.wr_count == 1 && m.dev.rd_count == 1, det);
     }
 

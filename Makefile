@@ -10,7 +10,7 @@ CC      ?= cc
 CFLAGS  ?= -O2 -std=c11 -Wall -Wextra
 SUBDIRS  = emu
 
-.PHONY: all test bench clean $(SUBDIRS)
+.PHONY: all test bench host-x11 clean $(SUBDIRS)
 
 all: $(SUBDIRS)
 
@@ -22,6 +22,9 @@ test:
 
 bench:
 	$(MAKE) -C emu CC="$(CC)" CFLAGS="$(CFLAGS)" bench
+
+host-x11:
+	$(MAKE) -C emu CC="$(CC)" CFLAGS="$(CFLAGS)" host-x11
 
 clean:
 	$(MAKE) -C emu clean

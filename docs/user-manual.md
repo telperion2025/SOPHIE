@@ -57,13 +57,16 @@ Build products land next to their sources (`emu/core/*.o`, `emu/mach/*.o`,
 make test
 ```
 
-This runs three suites:
+This runs six suites:
 
 | Suite | Binary | What it proves |
 | --- | --- | --- |
 | `arm26` | `emu/tests/arm26_test` | The C core passes all **42 assertions** of the transplanted JS suite (spec Appendix B): data processing and flags, shifter carries, MUL, SWP, LDR/STR incl. unaligned-load rotation, LDM/STM all four stack orders with r15-as-CPSR stores, exception entry (SWI/IRQ/undefined), MOVS pc full-CPSR restore, TEQP mode switch, loops, SWI-0 halt convention. |
+| `arm26_ext` | `emu/tests/arm26_ext_test` | WP6 core extensions (**15 assertions**): group-011 register-offset LDR/STR, ARMv4 halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH), `LDR pc`, undefined-space traps. |
 | `mmio` | `emu/tests/mmio_test` | WP2: the device registry routes rd8/wr8/rd32/wr32, the CPU reaches MMIO devices through the bus, unmapped accesses are safe open-bus, region priority, and the flat-RAM path is unaffected. |
-| `machine` | `emu/tests/machine_test` | WP3: a hand-built dummy ROM boots the Archimedes base machine, reads/writes emulated memory, receives IOC timer IRQs, and an IRQ-driven loop runs **1,000,000 cycles without lockup**; plus VIDC framebuffer rendering and the IOC keyboard path. |
+| `machine` | `emu/tests/machine_test` | WP3/WP4: a hand-built dummy ROM boots the Archimedes base machine through the MEMC CAM walk, reads/writes emulated memory, receives IOC timer, VIDC-flyback (vsync) and KART keyboard IRQs, and an IRQ-driven loop runs **1,000,000 cycles without lockup**; plus ROM-window mirroring, VIDC framebuffer rendering and the keyboard path. |
+| `host` | `emu/tests/host_test` | WP5 host window layer (**11 assertions**): headless present/poll/quit cycle, PPM snapshot contents, host→RISC OS keymap, and `host_pump_input()` injecting KART make/break bytes into the machine. |
+| `fdc` | `emu/tests/fdc_test` | WP7 (**33 assertions**): WD1772 floppy controller model — register map at 0x03310000, type I/seek/read/write sector/read address/force-interrupt commands, DRQ/INTRQ wired to IOC FIQ FH0/FH1, drive latches at 0x03250040/0x03250018 — verified against real disc images, including an end-to-end guest program that reads a 1024-byte sector through the memory bus. |
 
 Each suite prints `name: N passed, M failed` and exits non-zero on any
 failure; `make test` stops at the first failing suite.
@@ -108,9 +111,59 @@ ioc_key_press(&m.ioc, 'A');                   /* inject a keypress (KART) */
 ```
 
 Memory map and device register details are in the
-[reference manual](reference-manual.md). ROM images are **not** distributed
-with this repository (spec section 5): acquire a RISC OS 2/3 ROM image
-separately for WP4.
+[reference manual](reference-manual.md). ROM images are runtime data, not
+repo content at release (spec section 5; see README/NOTICE for the
+development-vs-distribution policy): the WP4+ loader reads them from a local
+`roms/` directory (gitignored), e.g. `roms/ROM300` for RISC OS 3.00 or
+`roms/riscos5-5.30-pi.img` for RISC OS 5.30.
+
+ROM boot smoke test (WP4 groundwork — not part of `make test`):
+
+```sh
+make                                   # builds emu/tools/romboot
+emu/tools/romboot roms/ROM300 5000000  # run 5M instructions, print final state
+```
+
+Host window frontend (WP5 — not part of `make test`):
+
+```sh
+emu/tools/sophie roms/ROM300 100 --ppm /tmp/frame.ppm   # headless: PPM snapshot per frame
+make -C emu host-x11 && DISPLAY=:0 emu/tools/sophie-x11 roms/ROM300   # real X11 window
+```
+
+`sophie` boots the ROM in the Archimedes machine, renders each VIDC frame
+through the host window layer and pumps host keyboard input into the IOC
+KART. The default build is headless (PPM snapshots via `--ppm`, scripted
+input in tests); `make host-x11` adds a real X11 window backend (libX11 is
+dlopen'd at runtime, so the default build has no X11 dependency).
+
+Disc images (WP7 — not part of `make test`). Create a blank, formatted ADFS
+floppy image (ADFS L, 640K, old map) and attach it to floppy drive 0:
+
+```sh
+emu/tools/mkadfs /tmp/blank.adl MyDisc      # blank ADFS L image, name "MyDisc"
+emu/tools/sophie roms/ROM300 100 --ppm /tmp/frame.ppm --disc 0=/tmp/blank.adl
+emu/tools/romboot roms/ROM300 5000000 --disc 0=/tmp/blank.adl   # smoke run
+```
+
+`--disc N=path` attaches a raw sector image to drive N (0-3); `--ro` attaches
+it write-protected. Supported image sizes are the ADFS S/M/L/D/E/F/G and DOS
+360K/400K/720K geometries (see the reference manual §4.6); the WD1772 is
+modelled at 0x03310000 with DRQ/INTRQ on IOC FIQ bits FH0/FH1, so guest code
+driving the controller sees a real filing-system device.
+
+Battery-backed CMOS RAM (PCF8583, reference manual §4.4a) persists via
+`--cmos FILE`: the 240-byte config region (0x10-0xFF) is loaded before the
+boot and saved on exit (the file is created on first save), so *Configure
+settings survive across runs. The PCF8583 clock registers tick at 100 Hz
+from the emulated 8 MHz clock. The built-in defaults are the RISC OS 3
+*Configure map; RISC OS 2 uses a different CMOS map, so with ROM200 point
+`--cmos` at a file the RO2 install has written itself:
+
+```sh
+emu/tools/sophie roms/ROM200 100 --ppm /tmp/frame.ppm --cmos /tmp/rom200.cmos
+emu/tools/romboot roms/ROM200 5000000 --cmos /tmp/rom200.cmos
+```
 
 ## 7. Repository layout
 
