@@ -100,6 +100,23 @@ jobs:
           elseif emu.register_frame then emu.register_frame(tick); print("LUA: hook=register_frame")
           else print("LUA: no frame hook available") end
           if emu.register_stop then emu.register_stop(function() snap(); print("LUA: stop hook snapped") end); print("LUA: hook=register_stop") end
+          -- I/O read tap: log all reads of the IOC/MEMC/VIDC window to iotap.log
+          local f = io.open("iotap.log", "w")
+          local function tap(addr, data)
+            if f then f:write(string.format("%08x %08x\n", addr, data)); f:flush() end
+          end
+          local cpu = manager.machine.devices[":maincpu"]
+          if cpu then
+            local sp = cpu.spaces["program"]
+            if sp and sp.add_read_tap then
+              sp:add_read_tap(0x03200000, 0x0320007f, "ioc_tap", tap)
+              sp:add_read_tap(0x03400000, 0x0340ffff, "vidc_tap", tap)
+              sp:add_read_tap(0x03600000, 0x0360ffff, "memc_tap", tap)
+              sp:add_read_tap(0x03310000, 0x0331ffff, "fdc_tap", tap)
+              sp:add_read_tap(0x03250000, 0x0325ffff, "latch_tap", tap)
+              print("LUA: io taps installed")
+            end
+          end
           EOF
           mame aa3000 -bios 300 -rompath mame-roms -video soft -sound none \
                -seconds_to_run 120 -snapshot_directory snaps \
@@ -113,4 +130,5 @@ jobs:
           path: |
             mame.log
             listroms.txt
+            iotap.log
             snaps/
