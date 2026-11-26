@@ -62,28 +62,25 @@ jobs:
       # (byte-interleaved 4 ways): 0270,251..254-01.rom = ROM300[0::4], [1::4], ...
       - name: Map ROMS/ROM300 onto the aa3000 BIOS 300 set
         run: |
-          mkdir -p mame-roms
+          mkdir -p mame-roms/aa3000 mame-roms/archimedes_keyboard
           python3 - <<'EOF'
           import os
           rom = open('ROMS/ROM300','rb').read()
           assert len(rom) == 0x200000, hex(len(rom))
           names = ['0270,251-01.rom','0270,252-01.rom','0270,253-01.rom','0270,254-01.rom']
           for i, name in enumerate(names):
-              open(os.path.join('mame-roms', name), 'wb').write(rom[i::4])
+              open(os.path.join('mame-roms/aa3000', name), 'wb').write(rom[i::4])
               print('wrote', name, len(rom[i::4]))
           # CMOS defaults (RO3 init values, see aa310.cpp init_r225): 256-byte i2cmem
           cmos = bytearray(0x100)
           for off, val in ((0x30,0x20),(0x36,0x01),(0x45,0x17),(0x50,0x90),(0xb4,0x24),(0xc7,0x00),(0xd0,0x08)):
               cmos[off] = val
-          open('mame-roms/cmos_riscos3.bin','wb').write(bytes(cmos))
-          # keyboard MCU ROM (6570-036, 2KB) if required: fill with 0xFF
-          if os.path.exists('listroms.txt'):
-              for line in open('listroms.txt'):
-                  if '6570-036' in line:
-                      open('mame-roms/6570-036','wb').write(b'\xff' * 2048)
-                      print('wrote dummy 6570-036')
+          open('mame-roms/aa3000/cmos_riscos3.bin','wb').write(bytes(cmos))
+          # keyboard MCU ROM (philips 8051, 4KB): dummy fill, CRC will warn but MAME runs
+          open('mame-roms/archimedes_keyboard/acorn_0280,022-01_philips_8051ah-2.bin','wb').write(b'\xff' * 4096)
+          print('wrote dummy keyboard MCU rom')
           EOF
-          mame -verifyroms aa3000 -rompath mame-roms -bios 300 || true
+          mame -verifyroms aa3000 -rompath mame-roms || true
 
       - name: Boot ROM300 under MAME and snapshot the screen
         run: |
