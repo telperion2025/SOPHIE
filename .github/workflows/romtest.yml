@@ -54,44 +54,36 @@ jobs:
           sudo apt-get install -y mame
           mame -version
 
-      - name: Discover the a3000 ROM set
+      - name: Discover the aa3000 ROM set
         run: |
-          mame -listroms a3000 | tee listroms.txt
+          mame -listroms aa3000 | tee listroms.txt
 
-      - name: Map ROMS/ROM300 onto the MAME set
+      # aa3000 BIOS "300" (RISC OS 3.00) loads 4 x 512KB ROMs with ROM_SKIP(3)
+      # (byte-interleaved 4 ways): 0270,251..254-01.rom = ROM300[0::4], [1::4], ...
+      - name: Map ROMS/ROM300 onto the aa3000 BIOS 300 set
         run: |
           mkdir -p mame-roms
           python3 - <<'EOF'
-          import re, shutil, os
+          import os
           rom = open('ROMS/ROM300','rb').read()
-          print('ROM300 size', len(rom), hex(len(rom)))
-          entries = []
-          for line in open('listroms.txt'):
-              m = re.match(r'\s*(\S+)\s+(\d+)\s+([0-9a-f]{8})\s', line)
-              if m:
-                  entries.append((m.group(1), int(m.group(2)), m.group(3)))
-          print('entries:', entries)
-          if not entries:
-              raise SystemExit('could not parse listroms')
-          total = sum(s for _, s, _ in entries)
-          if len(entries) == 1 and entries[0][1] == len(rom):
-              shutil.copy('ROMS/ROM300', os.path.join('mame-roms', entries[0][0]))
-              print('single-rom set: copied as', entries[0][0])
-          else:
-              # split round-robin across the chips (ROM_LOAD32_BYTE-style interleave)
-              n = len(entries)
-              print('total expected', total, 'have', len(rom))
-              chunks = [bytearray() for _ in range(n)]
-              for i, b in enumerate(rom):
-                  chunks[i % n].append(b)
-              for (name, size, crc), ch in zip(entries, chunks):
-                  data = bytes(ch)
-                  if len(data) < size:
-                      data = data + b'\xff' * (size - len(data))
-                  open(os.path.join('mame-roms', name), 'wb').write(data[:size])
-                  print('wrote', name, size)
+          assert len(rom) == 0x200000, hex(len(rom))
+          names = ['0270,251-01.rom','0270,252-01.rom','0270,253-01.rom','0270,254-01.rom']
+          for i, name in enumerate(names):
+              open(os.path.join('mame-roms', name), 'wb').write(rom[i::4])
+              print('wrote', name, len(rom[i::4]))
+          # CMOS defaults (RO3 init values, see aa310.cpp init_r225): 256-byte i2cmem
+          cmos = bytearray(0x100)
+          for off, val in ((0x30,0x20),(0x36,0x01),(0x45,0x17),(0x50,0x90),(0xb4,0x24),(0xc7,0x00),(0xd0,0x08)):
+              cmos[off] = val
+          open('mame-roms/cmos_riscos3.bin','wb').write(bytes(cmos))
+          # keyboard MCU ROM (6570-036, 2KB) if required: fill with 0xFF
+          if os.path.exists('listroms.txt'):
+              for line in open('listroms.txt'):
+                  if '6570-036' in line:
+                      open('mame-roms/6570-036','wb').write(b'\xff' * 2048)
+                      print('wrote dummy 6570-036')
           EOF
-          mame -verifyroms a3000 -rompath mame-roms || true
+          mame -verifyroms aa3000 -rompath mame-roms -bios 300 || true
 
       - name: Boot ROM300 under MAME and snapshot the screen
         run: |
@@ -103,7 +95,7 @@ jobs:
             if n == 50 * 100 then manager.machine:video():snapshot() end
           end)
           EOF
-          mame a3000 -rompath mame-roms -video none -sound none \
+          mame aa3000 -bios 300 -rompath mame-roms -video none -sound none \
                -seconds_to_run 120 -snapshot_directory snaps \
                -autoboot_script snap.lua 2>&1 | tee mame.log || true
           ls -la snaps/ || true
