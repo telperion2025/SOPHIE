@@ -128,6 +128,8 @@ Host window frontend (WP5 — not part of `make test`):
 
 ```sh
 emu/tools/sophie roms/ROM300 100 --ppm /tmp/frame.ppm   # headless: PPM snapshot per frame
+emu/tools/sophie roms/ROM300 2000 --keys "*Help\n" --keys-at 500 --ppm /tmp/f.ppm  # type into the guest
+emu/tools/sophie x 20 --stub-desktop --ppm /tmp/stub.ppm  # M3 stub desktop (no ROM needed)
 make -C emu host-x11 && DISPLAY=:0 emu/tools/sophie-x11 roms/ROM300   # real X11 window
 ```
 
@@ -136,6 +138,13 @@ through the host window layer and pumps host keyboard input into the IOC
 KART. The default build is headless (PPM snapshots via `--ppm`, scripted
 input in tests); `make host-x11` adds a real X11 window backend (libX11 is
 dlopen'd at runtime, so the default build has no X11 dependency).
+
+`--keys "text"` types text into the guest one character per 4 frames starting
+at `--keys-at` frame (`\n` = RETURN, `\t` = TAB) — used to drive the CLI/Wimp
+(M3). `--stub-desktop` skips the ROM boot and renders a built-in stub desktop
+(backdrop, icon bar, window, pointer) through the real VIDC/MEMC pipeline —
+a placeholder for the visible desktop (M3) while the ROM boot stall
+(GitHub issue #3) is unresolved.
 
 Disc images (WP7 — not part of `make test`). Create a blank, formatted ADFS
 floppy image (ADFS L, 640K, old map) and attach it to floppy drive 0:

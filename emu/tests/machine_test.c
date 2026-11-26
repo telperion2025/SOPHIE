@@ -488,6 +488,19 @@ int main(void)
     snprintf(det, sizeof det, "fb[10,27]=%" PRIx32, p1);
     check("vidc-render-pixel-blue", p1 == 0x0000FFu, det);
 
+    /* M3 stub-desktop style check: fill the whole screen byte plane with pen 1
+     * and verify the render produces a large non-border area (the pipeline the
+     * --stub-desktop mode in tools/sophie.c exercises) */
+    for (uint32_t i = 0; i < 0x10000u; i++)
+        mem_wr8(&m.bus, 0x10000u + i, 0x55u); /* pen 5 = red */
+    vidc_render(&m.vidc, &m.bus, fb, 400, 300);
+    long nonborder = 0;
+    for (int i = 0; i < 400 * 300; i++)
+        if (fb[i] != m.vidc.pal[0x110])
+            nonborder++;
+    snprintf(det, sizeof det, "nonborder=%ld", nonborder);
+    check("vidc-render-area-nonborder", nonborder > 1000, det);
+
     /* MEMC data abort: USR-mode data access to unclaimed I/O (podule space)
      * aborts to vector 0x10 with lr_svc = faulting pc+8 (SUBS PC,lr,#8 retries); claimed devices
      * (IOC) and instruction fetches stay accessible in USR mode */

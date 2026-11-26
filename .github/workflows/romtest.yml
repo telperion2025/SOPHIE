@@ -1,0 +1,134 @@
+name: ROM tests (dev branch only - carries ROMS/)
+
+# Runs on GitHub's servers, not the sandbox:
+#  1. rom-smoke: build + make test + romboot smoke with the real ROM images
+#     (ROM300 150M must stay in the OS loop now that tools default to 1MB DRAM;
+#      ROM200 20M shows the known issue-#3 derail).
+#  2. mame-reference (best effort): boot ROM300 under MAME's Archimedes driver
+#     and take a screen snapshot, to compare against SOPHIE's behaviour
+#     (the reference-emulator experiment for issue #3).
+# ROMS/ exists only on the dev branch, so this workflow only triggers there.
+
+on:
+  push:
+    branches: [vibe/sophie-emulator-wp1-wp3-010867, vibe/romtest-ci-cfe44a]
+  workflow_dispatch:
+
+jobs:
+  rom-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and unit tests
+        run: |
+          make
+          make test
+
+      - name: ROM300 smoke (150M cycles, 1MB DRAM - must stay in ROM/OS loop)
+        run: |
+          out=$(./emu/tools/romboot ROMS/ROM300 150000000)
+          echo "$out"
+          echo "$out" | grep -qE "^pc=038" || { echo "FAIL: ROM300 left the ROM/OS window (issue #3 class)"; exit 1; }
+
+      - name: ROM200 smoke (20M cycles - known issue #3 derail, informational)
+        run: |
+          ./emu/tools/romboot ROMS/ROM200 20000000 || true
+
+      - name: Stub desktop render
+        run: |
+          ./emu/tools/sophie x 20 --stub-desktop --ppm /tmp/stub.ppm | tail -1
+          test -s /tmp/stub.ppm
+
+  mame-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MAME
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mame
+          mame -version
+
+      - name: Discover the aa3000 ROM set
+        run: |
+          mame -listroms aa3000 | tee listroms.txt
+
+      # aa3000 BIOS "300" (RISC OS 3.00) loads 4 x 512KB ROMs with ROM_SKIP(3)
+      # (byte-interleaved 4 ways): 0270,251..254-01.rom = ROM300[0::4], [1::4], ...
+      - name: Map ROMS/ROM300 onto the aa3000 BIOS 300 set
+        run: |
+          mkdir -p mame-roms/aa3000 mame-roms/archimedes_keyboard
+          python3 - <<'EOF'
+          import os
+          rom = open('ROMS/ROM300','rb').read()
+          assert len(rom) == 0x200000, hex(len(rom))
+          names = ['0270,251-01.rom','0270,252-01.rom','0270,253-01.rom','0270,254-01.rom']
+          for i, name in enumerate(names):
+              open(os.path.join('mame-roms/aa3000', name), 'wb').write(rom[i::4])
+              print('wrote', name, len(rom[i::4]))
+          # CMOS defaults (RO3 init values, see aa310.cpp init_r225): 256-byte i2cmem
+          cmos = bytearray(0x100)
+          for off, val in ((0x30,0x20),(0x36,0x01),(0x45,0x17),(0x50,0x90),(0xb4,0x24),(0xc7,0x00),(0xd0,0x08)):
+              cmos[off] = val
+          open('mame-roms/aa3000/cmos_riscos3.bin','wb').write(bytes(cmos))
+          # keyboard MCU ROM (philips 8051, 4KB): dummy fill, CRC will warn but MAME runs
+          open('mame-roms/archimedes_keyboard/acorn_0280,022-01_philips_8051ah-2.bin','wb').write(b'\xff' * 4096)
+          print('wrote dummy keyboard MCU rom')
+          EOF
+          mame -verifyroms aa3000 -rompath mame-roms || true
+
+      - name: Boot ROM300 under MAME and snapshot the screen
+        run: |
+          cat > snap.lua <<'EOF'
+          local n = 0
+          local function snap()
+            local v = manager.machine.video
+            if v == nil and manager.machine.video then v = manager.machine:video() end
+            if v and v.snapshot then v:snapshot(); print("LUA: snapshot taken") end
+          end
+          local function tick()
+            n = n + 1
+            if n == 50 * 100 then snap() end
+          end
+          if emu.register_frame_done then emu.register_frame_done(tick); print("LUA: hook=register_frame_done")
+          elseif emu.add_machine_frame_done then emu.add_machine_frame_done(tick); print("LUA: hook=add_machine_frame_done")
+          elseif emu.register_frame then emu.register_frame(tick); print("LUA: hook=register_frame")
+          else print("LUA: no frame hook available") end
+          if emu.register_stop then emu.register_stop(function() snap(); print("LUA: stop hook snapped") end); print("LUA: hook=register_stop") end
+          -- I/O read tap: log all reads of the IOC/MEMC/VIDC window to iotap.log
+          local f = io.open("iotap.log", "w")
+          local function tap(addr, data)
+            if f then f:write(string.format("%08x %08x\n", addr, data)); f:flush() end
+          end
+          local cpu = manager.machine.devices[":maincpu"]
+          if cpu then
+            local sp = cpu.spaces["program"]
+            if sp and sp.add_read_tap then
+              sp:add_read_tap(0x03200000, 0x0320007f, "ioc_tap", tap)
+              sp:add_read_tap(0x03400000, 0x0340ffff, "vidc_tap", tap)
+              sp:add_read_tap(0x03600000, 0x0360ffff, "memc_tap", tap)
+              sp:add_read_tap(0x03310000, 0x0331ffff, "fdc_tap", tap)
+              sp:add_read_tap(0x03250000, 0x0325ffff, "latch_tap", tap)
+              print("LUA: io taps installed")
+            end
+          end
+          EOF
+          mame aa3000 -bios 300 -rompath mame-roms -video soft -sound none \
+               -seconds_to_run 120 -snapshot_directory snaps \
+               -autoboot_script snap.lua 2>&1 | tee mame.log || true
+          ls -la snaps/ snap/ 2>/dev/null || true; find / -maxdepth 4 -name '*.png' -path '*snap*' 2>/dev/null | head -5 || true
+
+      - name: Upload reference artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mame-reference
+          path: |
+            mame.log
+            listroms.txt
+            iotap.log
+            snaps/
