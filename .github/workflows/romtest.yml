@@ -102,8 +102,9 @@ jobs:
           if emu.register_stop then emu.register_stop(function() snap(); print("LUA: stop hook snapped") end); print("LUA: hook=register_stop") end
           EOF
           mame aa3000 -bios 300 -rompath mame-roms -video soft -sound none \
-               -seconds_to_run 120 -autoboot_script snap.lua 2>&1 | tee mame.log || true
-          find . -name '*.png' -path '*snap*' 2>/dev/null; ls -la snap/ 2>/dev/null; ls -la ~/snap 2>/dev/null; true
+               -seconds_to_run 120 -snapshot_directory snaps \
+               -autoboot_script snap.lua 2>&1 | tee mame.log || true
+          ls -la snaps/ snap/ 2>/dev/null || true; find / -maxdepth 4 -name '*.png' -path '*snap*' 2>/dev/null | head -5 || true
 
       - name: Upload reference artifacts
         uses: actions/upload-artifact@v4
@@ -112,4 +113,4 @@ jobs:
           path: |
             mame.log
             listroms.txt
-            snap/
+            snaps/
