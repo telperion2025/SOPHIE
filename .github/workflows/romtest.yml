@@ -89,7 +89,7 @@ jobs:
           local function tick()
             n = n + 1
             if n == 50 * 100 then
-              local v = manager.machine:video()
+              local v = manager.machine.video or (manager.machine:video())
               if v and v.snapshot then v:snapshot() end
             end
           end
