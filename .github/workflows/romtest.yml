@@ -1,0 +1,118 @@
+name: ROM tests (dev branch only - carries ROMS/)
+
+# Runs on GitHub's servers, not the sandbox:
+#  1. rom-smoke: build + make test + romboot smoke with the real ROM images
+#     (ROM300 150M must stay in the OS loop now that tools default to 1MB DRAM;
+#      ROM200 20M shows the known issue-#3 derail).
+#  2. mame-reference (best effort): boot ROM300 under MAME's Archimedes driver
+#     and take a screen snapshot, to compare against SOPHIE's behaviour
+#     (the reference-emulator experiment for issue #3).
+# ROMS/ exists only on the dev branch, so this workflow only triggers there.
+
+on:
+  push:
+    branches: [vibe/sophie-emulator-wp1-wp3-010867, vibe/romtest-ci-cfe44a]
+  workflow_dispatch:
+
+jobs:
+  rom-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and unit tests
+        run: |
+          make
+          make test
+
+      - name: ROM300 smoke (150M cycles, 1MB DRAM - must stay in ROM/OS loop)
+        run: |
+          out=$(./emu/tools/romboot ROMS/ROM300 150000000)
+          echo "$out"
+          echo "$out" | grep -qE "^pc=038" || { echo "FAIL: ROM300 left the ROM/OS window (issue #3 class)"; exit 1; }
+
+      - name: ROM200 smoke (20M cycles - known issue #3 derail, informational)
+        run: |
+          ./emu/tools/romboot ROMS/ROM200 20000000 || true
+
+      - name: Stub desktop render
+        run: |
+          ./emu/tools/sophie x 20 --stub-desktop --ppm /tmp/stub.ppm | tail -1
+          test -s /tmp/stub.ppm
+
+  mame-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MAME
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mame
+          mame -version
+
+      - name: Discover the a3000 ROM set
+        run: |
+          mame -listroms a3000 | tee listroms.txt
+
+      - name: Map ROMS/ROM300 onto the MAME set
+        run: |
+          mkdir -p mame-roms
+          python3 - <<'EOF'
+          import re, shutil, os
+          rom = open('ROMS/ROM300','rb').read()
+          print('ROM300 size', len(rom), hex(len(rom)))
+          entries = []
+          for line in open('listroms.txt'):
+              m = re.match(r'\s*(\S+)\s+(\d+)\s+([0-9a-f]{8})\s', line)
+              if m:
+                  entries.append((m.group(1), int(m.group(2)), m.group(3)))
+          print('entries:', entries)
+          if not entries:
+              raise SystemExit('could not parse listroms')
+          total = sum(s for _, s, _ in entries)
+          if len(entries) == 1 and entries[0][1] == len(rom):
+              shutil.copy('ROMS/ROM300', os.path.join('mame-roms', entries[0][0]))
+              print('single-rom set: copied as', entries[0][0])
+          else:
+              # split round-robin across the chips (ROM_LOAD32_BYTE-style interleave)
+              n = len(entries)
+              print('total expected', total, 'have', len(rom))
+              chunks = [bytearray() for _ in range(n)]
+              for i, b in enumerate(rom):
+                  chunks[i % n].append(b)
+              for (name, size, crc), ch in zip(entries, chunks):
+                  data = bytes(ch)
+                  if len(data) < size:
+                      data = data + b'\xff' * (size - len(data))
+                  open(os.path.join('mame-roms', name), 'wb').write(data[:size])
+                  print('wrote', name, size)
+          EOF
+          mame -verifyroms a3000 -rompath mame-roms || true
+
+      - name: Boot ROM300 under MAME and snapshot the screen
+        run: |
+          mkdir -p snaps
+          cat > snap.lua <<'EOF'
+          local n = 0
+          emu.add_machine_frame_done(function()
+            n = n + 1
+            if n == 50 * 100 then manager.machine:video():snapshot() end
+          end)
+          EOF
+          mame a3000 -rompath mame-roms -video none -sound none \
+               -seconds_to_run 120 -snapshot_directory snaps \
+               -autoboot_script snap.lua 2>&1 | tee mame.log || true
+          ls -la snaps/ || true
+
+      - name: Upload reference artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mame-reference
+          path: |
+            mame.log
+            listroms.txt
+            snaps/
