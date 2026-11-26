@@ -84,18 +84,22 @@ jobs:
 
       - name: Boot ROM300 under MAME and snapshot the screen
         run: |
-          mkdir -p snaps
           cat > snap.lua <<'EOF'
           local n = 0
-          emu.add_machine_frame_done(function()
+          local function tick()
             n = n + 1
-            if n == 50 * 100 then manager.machine:video():snapshot() end
-          end)
+            if n == 50 * 100 then
+              local v = manager.machine:video()
+              if v and v.snapshot then v:snapshot() end
+            end
+          end
+          if emu.register_frame_done then emu.register_frame_done(tick)
+          elseif emu.add_machine_frame_done then emu.add_machine_frame_done(tick)
+          elseif emu.register_frame then emu.register_frame(tick) end
           EOF
-          mame aa3000 -bios 300 -rompath mame-roms -video none -sound none \
-               -seconds_to_run 120 -snapshot_directory snaps \
-               -autoboot_script snap.lua 2>&1 | tee mame.log || true
-          ls -la snaps/ || true
+          mame aa3000 -bios 300 -rompath mame-roms -video soft -sound none \
+               -seconds_to_run 120 -autoboot_script snap.lua 2>&1 | tee mame.log || true
+          ls -la snap/ 2>/dev/null || true
 
       - name: Upload reference artifacts
         uses: actions/upload-artifact@v4
@@ -104,4 +108,4 @@ jobs:
           path: |
             mame.log
             listroms.txt
-            snaps/
+            snap/
